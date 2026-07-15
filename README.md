@@ -1,67 +1,66 @@
-# NDI Multichannel Bridge for OBS Studio
+# DistroAV Multichannel Main Output Hotfix v0.1.0-alpha
 
-**Experimental v0.1.0 alpha**
+This is a small **private-repository builder** for an experimental DistroAV 6.2.1 fork. It does not contain the full DistroAV source tree. GitHub Actions checks out the official DistroAV 6.2.1 tag, applies the included source patch, builds it, and produces Windows artifacts.
 
-NDI Multichannel Bridge sends the OBS program video and two independently routed stereo mixes inside **one NDI A/V stream**:
+## What the fork does
 
-- NDI channels 1-2: desktop/game mix
-- NDI channels 3-4: microphone mix
-- Video and all four audio channels: one NDI sender and one timing domain
+DistroAV Main Output keeps its existing video path and its existing single NDI sender, but its audio becomes four-channel:
 
-On the receiving PC, the plugin captures that stream once and fans it out as:
+- **NDI channels 1–2:** OBS Track 5, stereo
+- **NDI channels 3–4:** OBS Track 6, stereo
 
-- `NDI Multichannel Video`
-- `NDI Multichannel Audio Pair` for channels 1-2
-- `NDI Multichannel Audio Pair` for channels 3-4
+This avoids the standalone bridge sender's additional full-frame BGRA copy/conversion path. Other DistroAV output instances stay in ordinary audio mode.
 
-The receiver sources share one receiver thread and one timestamp mapper instead of opening three independent NDI receivers.
+## Build on GitHub
 
-## Why this exists
+1. Create a **private** GitHub repository.
+2. Upload the contents of this folder, including `.github`.
+3. Open **Actions → Build DistroAV Multichannel Hotfix → Run workflow**.
+4. Download the normal or portable Windows artifact after the job succeeds.
 
-Separate NDI video, desktop-audio, and mic sources can reconnect, buffer, and drift independently. NDI supports arbitrary discrete audio-channel counts, and DistroAV 6.2.1 already demonstrates four important pieces this plugin builds on: NDI v3 planar-float audio frames, synthesized NDI timecodes, raw OBS A/V output, and multichannel NDI receive support.
+The first GitHub run is also the first complete Windows compile test for this alpha. A compile error should be treated as a patch bug rather than proof that the design cannot work.
+
+## Install
+
+Close OBS. Back up the current DistroAV installation, then install the produced fork over DistroAV or use the portable ZIP to copy its plugin files into the OBS installation. Do not keep two different `distroav.dll` builds active simultaneously.
+
+The fork still requires the normal NDI Runtime expected by DistroAV.
 
 ## Sender setup
 
-1. Install the plugin on the gaming/sender PC.
-2. In **Advanced Audio Properties**, place desktop/game audio on one otherwise-unused OBS track and mic on another.
-3. Open **Tools > NDI Multichannel Bridge**.
-4. Choose the desktop/game track for NDI channels 1-2.
-5. Choose the mic track for NDI channels 3-4.
-6. Start the sender.
+On the gaming PC:
 
-The selected tracks should normally contain only the intended sources. OBS Track 1 can still be your ordinary stream mix; for example, use Track 5 for desktop and Track 6 for mic.
+1. In **Advanced Audio Properties**, place desktop/game audio on **Track 5**.
+2. Place the microphone on **Track 6**.
+3. They may also remain on Track 1 for local monitoring or other output needs.
+4. Enable **DistroAV Main Output** normally.
+5. Do not run the old standalone multichannel sender at the same time.
 
-## Receiver setup
+The OBS log should contain:
 
-1. Install the plugin on the streaming/receiver PC.
-2. Open **Tools > NDI Multichannel Bridge**.
-3. Enter the exact sender NDI source name.
-4. Click **Create video + desktop + mic sources**.
-5. Route the two resulting audio sources to Twitch and recording tracks normally.
+```text
+DistroAV Multichannel Main Output hotfix enabled: Track 5 -> NDI 1-2, Track 6 -> NDI 3-4
+```
 
-Do not add three separate DistroAV receivers for this same feed. The built-in receiver bundle is what keeps the video and both audio pairs on one capture/timestamp path.
+## Receiver
 
-## DistroAV relationship
+A receiver must split the incoming four-channel audio without mixing it down:
 
-This is an independent GPL OBS plugin designed to coexist with DistroAV and use the same installed NDI Runtime. It does not modify DistroAV or use DistroAV private APIs. The build workflow retrieves the NDI SDK headers from the DistroAV 6.2.1 source tree; no NDI runtime binary is bundled.
+- channels 1–2 → desktop source
+- channels 3–4 → microphone source
 
-Requirements:
+The earlier NDI Multichannel Bridge receiver bundle is intended for that role. Stock DistroAV may expose or mix the four channels according to the OBS speaker layout; it does not currently provide two independently controllable stereo sources from one shared receiver.
 
-- OBS Studio 32.1.2 or newer
-- NDI Runtime 6.3 or newer (normally already installed for DistroAV 6.2.1)
-- 48 kHz OBS audio recommended
+## Current limitations
 
-## Alpha limitations
+- Track selection is fixed to **Tracks 5 and 6** in this first alpha.
+- Only the Main Output is changed to four-channel mode.
+- This has not yet been validated in a real two-PC stream.
+- The paired audio blocks are matched by OBS timestamp and sample count. An unmatched older block is discarded rather than allowing one pair to drift away from the other.
+- This does not guarantee that two separate physical audio devices are hardware-clock-locked before OBS mixes them. It does put the resulting two OBS mixes into one NDI sender/timeline.
 
-- Windows is the only packaged target in the included workflow.
-- Exact NDI source name entry is required; source discovery UI is not implemented yet.
-- Sender video is converted to BGRA for the first implementation. This is reliable but uses more memory bandwidth than a native NV12 path.
-- Runtime testing against real OBS + NDI hardware is still required. The source-level pairing and timeline tests pass, but this archive does not contain a precompiled DLL.
-- HDR metadata and tally/PTZ/metadata forwarding are not implemented.
-- Automatic fallback to silence when one selected OBS track stops producing callbacks is not implemented yet; OBS normally continues delivering silent track blocks.
+## Licensing and attribution
 
-## License and trademarks
+The generated fork is based on DistroAV and remains licensed under **GPL-2.0-or-later**. Preserve DistroAV's existing copyright and license notices when distributing source or binaries.
 
-Licensed under **GPL-2.0-or-later**. See `LICENSE`.
-
-This is an independent third-party project and is not affiliated with or endorsed by the OBS Project, DistroAV, or Vizrt NDI AB. OBS and OBS Studio are registered trademarks of Wizards of OBS LLC. NDI® is a registered trademark of Vizrt NDI AB.
+This experimental hotfix is independent and is not affiliated with or endorsed by the DistroAV project, the OBS Project, or Vizrt NDI AB.

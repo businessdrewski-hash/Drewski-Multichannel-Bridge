@@ -1,13 +1,15 @@
 # Third-party notices
 
-## OBS Studio
-
-This plugin links to OBS Studio/libobs and is distributed under GPL-2.0-or-later. OBS Studio source and license notices are available from the OBS Project.
-
 ## DistroAV
 
-The Windows build workflow downloads the DistroAV 6.2.1 source archive only to copy its `lib/ndi` SDK header folder for compilation. DistroAV is GPL-2.0 licensed. No DistroAV binary or source file is included in the distributed plugin package.
+The GitHub workflow checks out DistroAV 6.2.1 and modifies two source files during the build. DistroAV is distributed under the GNU General Public License, version 2 or later. The generated source and binaries remain subject to that license. Original DistroAV notices are preserved in the modified files.
 
-## NDI SDK headers and runtime
+## OBS Studio
 
-The NDI SDK headers carry their own Vizrt NDI AB notices and license terms. The build process must preserve those headers' notices. The plugin dynamically loads an independently installed NDI Runtime and does not bundle the NDI runtime library.
+The generated DistroAV fork links against OBS Studio/libobs and uses the OBS plugin/output APIs. OBS Studio is an independent project. OBS and OBS Studio are trademarks of Wizards of OBS LLC.
+
+## NDI
+
+The generated DistroAV fork uses DistroAV's existing NDI integration and requires the applicable NDI Runtime. NDI® is a registered trademark of Vizrt NDI AB.
+
+No affiliation or endorsement is implied.

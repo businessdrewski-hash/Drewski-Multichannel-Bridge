@@ -1,0 +1,11 @@
+1. Create a private GitHub repository.
+2. Upload every item in this folder.
+3. Create .github/workflows/build-windows.yml directly on GitHub if the hidden folder is skipped.
+4. Open Actions.
+5. Choose "Build DistroAV Multichannel Hotfix".
+6. Click Run workflow.
+7. Download the Windows or portable artifact.
+
+Sender routing is fixed in this alpha:
+Track 5 = desktop/game audio
+Track 6 = microphone
