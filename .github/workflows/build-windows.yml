@@ -1,7 +1,11 @@
-name: Build Unified NDI Multichannel Bridge
+name: Build Unified Multichannel DistroAV for Windows
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - "**/*.md"
 
 permissions:
   contents: read
@@ -9,95 +13,71 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-2022
-
     steps:
-      - name: Check out bridge
+      - name: Check out bridge repository
         uses: actions/checkout@v4
 
-      - name: Fetch OBS plugin build infrastructure
+      - name: Check out clean DistroAV 6.2.1
+        uses: actions/checkout@v4
+        with:
+          repository: DistroAV/DistroAV
+          ref: 6.2.1
+          path: distroav
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Apply unified sender and receiver patch
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git clone --depth 1 https://github.com/obsproject/obs-plugintemplate.git _template
+          python hotfix/scripts/patch_distroav.py distroav
 
-          Copy-Item -Recurse -Force _template/cmake ./cmake
-          Copy-Item -Recurse -Force _template/.github/scripts ./.github/scripts
-
-          # Build-Windows.ps1 configures with the windows-ci-x64 preset.
-          # The previous workflow copied the scripts but omitted the preset file.
-          Copy-Item -Force _template/CMakePresets.json ./CMakePresets.json
-
-          if (-not (Test-Path ./CMakePresets.json)) {
-            throw 'CMakePresets.json was not copied to the repository root.'
-          }
-
-      - name: Fetch NDI SDK headers from DistroAV 6.2.1
+      - name: Build custom DistroAV x64
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git clone --depth 1 --branch 6.2.1 https://github.com/DistroAV/DistroAV.git _distroav
-          New-Item -ItemType Directory -Force lib/ndi | Out-Null
-          Copy-Item -Recurse -Force _distroav/lib/ndi/* lib/ndi/
-
-      - name: Validate build inputs
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $required = @(
-            'CMakeLists.txt',
-            'CMakePresets.json',
-            'buildspec.json',
-            '.github/scripts/Build-Windows.ps1',
-            'lib/ndi'
-          )
-          foreach ($item in $required) {
-            if (-not (Test-Path $item)) {
-              throw "Required build input missing: $item"
-            }
-          }
-          cmake --list-presets
-
-      - name: Configure and build
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
+          Push-Location distroav
           & .github/scripts/Build-Windows.ps1 -Target x64 -Configuration RelWithDebInfo
+          Pop-Location
 
-      - name: Create portable package
+      - name: Create portable drag-and-drop package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $package = Join-Path $env:GITHUB_WORKSPACE 'obs-install'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $built = Join-Path $env:GITHUB_WORKSPACE 'distroav\release\RelWithDebInfo\distroav'
+          Remove-Item -Recurse -Force $package,$dist -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $package,$dist | Out-Null
 
-          $out = 'release/NDI-Multichannel-Bridge-0.2.1-windows-x64'
-          New-Item -ItemType Directory -Force "$out/obs-plugins/64bit" | Out-Null
-          New-Item -ItemType Directory -Force "$out/data/obs-plugins/ndi-multichannel-bridge/locale" | Out-Null
-
-          $dll = Get-ChildItem -Recurse -Filter 'ndi-multichannel-bridge.dll' |
-            Where-Object { $_.FullName -match 'RelWithDebInfo|Release' } |
-            Select-Object -First 1
-
-          if (-not $dll) {
-            throw 'Built plugin DLL not found.'
+          if (-not (Test-Path "$built\bin")) {
+            throw "DistroAV build output not found at $built"
           }
 
-          Copy-Item $dll.FullName "$out/obs-plugins/64bit/ndi-multichannel-bridge.dll"
-          Copy-Item data/locale/* "$out/data/obs-plugins/ndi-multichannel-bridge/locale/"
-
-          $docs = @('README.md', 'INSTALL-AND-USE.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')
-          foreach ($doc in $docs) {
-            if (Test-Path $doc) {
-              Copy-Item $doc $out/
-            }
+          Copy-Item -Path "$built\bin" -Destination "$package\obs-plugins" -Recurse -Force
+          New-Item -ItemType Directory -Force "$package\data\obs-plugins\distroav" | Out-Null
+          if (Test-Path "$built\data\locale") {
+            Copy-Item -Path "$built\data\locale" -Destination "$package\data\obs-plugins\distroav\locale" -Recurse -Force
           }
 
-          Compress-Archive `
-            -Path "$out/*" `
-            -DestinationPath 'release/NDI-Multichannel-Bridge-0.2.1-windows-x64.zip' `
-            -Force
+          Copy-Item README.md $package
+          Copy-Item INSTALL-BOTH-PCS.md $package
+          Copy-Item RELEASE-NOTES.md $package
+          Copy-Item LICENSE-NOTICE.txt $package
+          Copy-Item distroav/LICENSE "$package\DISTROAV-GPL-LICENSE.txt"
+          Copy-Item tools/Install-MultichannelBridge.ps1 $package
+          Copy-Item tools/Install-MultichannelBridge.cmd $package
+          Copy-Item tools/Uninstall-MultichannelBridge.ps1 $package
+          Copy-Item tools/Uninstall-MultichannelBridge.cmd $package
+
+          $zip = Join-Path $dist 'NDI-Multichannel-Bridge-v0.3.0-alpha-Windows-x64.zip'
+          Compress-Archive -Path "$package\*" -DestinationPath $zip -Force
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $zip -Leaf)" | Set-Content -Encoding ascii (Join-Path $dist 'SHA256SUMS.txt')
 
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: NDI-Multichannel-Bridge-0.2.1-windows-x64
-          path: release/NDI-Multichannel-Bridge-0.2.1-windows-x64.zip
-          if-no-files-found: error
+          name: NDI-Multichannel-Bridge-v0.3.0-alpha-Windows-x64
+          path: dist/*
+          retention-days: 30
