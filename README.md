@@ -302,30 +302,6 @@ Capture logs from both PCs and look for:
 
 A forced reset may clear the symptom, but it should be treated as recovery—not as proof that the root cause is fixed.
 
-### Encoding lag at 4K60
-
-Do not install or enable the obsolete v0.2 standalone bridge output. That design requested a separate raw BGRA video output and copied 4K60 frames, which could overload OBS’s raw video-output path.
-
-The v0.3 architecture modifies DistroAV Main Output in place and retains DistroAV’s normal video sender path.
-
-### Duplicate DistroAV menus or `Duplicate library?` in the log
-
-Search all OBS plugin locations for multiple `distroav.dll` files. Common paths include:
-
-```text
-C:\Program Files\obs-studio\obs-plugins\64bit\distroav.dll
-C:\ProgramData\obs-studio\plugins\distroav\bin\64bit\distroav.dll
-%APPDATA%\obs-studio\plugins\distroav\bin\64bit\distroav.dll
-```
-
-Only one active DistroAV DLL should remain.
-
-### OBS reports the old multichannel plugin as missing
-
-The v0.3 bridge is integrated into `distroav.dll`; it does not use the old standalone `ndi-multichannel-bridge.dll`. Remove the obsolete module entry from OBS Plugin Manager or refresh `%APPDATA%\obs-studio\plugin_manager\modules.json` after backing it up.
-
----
-
 ## What this project does not guarantee
 
 This project reduces independent sender and receive paths; it does not make audio and video inseparable or eliminate every cause of synchronization failure.
