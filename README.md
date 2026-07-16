@@ -199,13 +199,6 @@ A healthy receiver normally shows:
 - Check whether `Discarded`, `Silence fallback`, `Missing program`, or `Missing mic` increased.
 - Check both OBS logs for reconnects, buffer changes, capture-hook reattachment, or output restarts.
 
-### Slow drift
-
-- Confirm both PCs use 48 kHz audio.
-- Measure the direction and rate over at least 30–60 minutes.
-- Compare controlled tests with Frame Sync on and off.
-- Avoid applying PPM correction until the drift is repeatable and the affected timing path is known.
-
 ### Duplicate DistroAV menus
 
 Only one active DistroAV installation should remain. Common plugin locations include:
