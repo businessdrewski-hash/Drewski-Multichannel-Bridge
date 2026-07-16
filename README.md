@@ -1,12 +1,14 @@
 # Multichannel Bridge for DistroAV
 
-Hi — I’m a YouTuber, not a professional software developer. I created this project to solve A/V sync problems in my own two-PC OBS/NDI setup, with substantial assistance from AI during coding, debugging, and documentation.
-I’m making it public because the approach or code may help other people dealing with similar issues. This is an experimental, unofficial project provided as-is, without any guarantee that it will work with every system or remain compatible with future OBS, DistroAV, or NDI updates.
-I may not have the time or technical ability to provide updates, individual support, or troubleshooting. Please feel free to study, modify, improve, fork, and redistribute the code, subject to the GPL and any applicable third-party licenses. Use it at your own risk, and contributions or better implementations are welcome.
-
 > Experimental modified DistroAV build for two-PC OBS setups  
 > Current version: **0.3.1-alpha**  
 > Based on: **DistroAV 6.2.1**
+
+## Personal project and support disclaimer
+
+Hi — I’m a YouTuber, not a professional software developer. I built this project to solve A/V sync problems in my own two-PC OBS/NDI setup, with substantial AI assistance during coding, debugging, and documentation.
+
+I’m publishing it because the approach or code may help others facing similar issues. This is experimental, unofficial software provided **as-is**. It may stop working after OBS, DistroAV, NDI, Windows, or driver updates, and I may not have the time or technical ability to provide updates, individual support, or troubleshooting. Feel free to study, modify, improve, fork, and redistribute the code, subject to the GPL and applicable third-party licenses. Use it at your own risk.
 
 Multichannel Bridge for DistroAV sends one OBS video output together with two independent stereo audio mixes through a single NDI® sender. On the receiving PC, those four audio channels are split back into separate OBS mixer sources before OBS downmixes them.
 
@@ -202,6 +204,13 @@ A healthy receiver normally shows:
 - Confirm there are no old separate NDI microphone or desktop-audio sources still active.
 - Check whether `Discarded`, `Silence fallback`, `Missing program`, or `Missing mic` increased.
 - Check both OBS logs for reconnects, buffer changes, capture-hook reattachment, or output restarts.
+
+### Slow drift
+
+- Confirm both PCs use 48 kHz audio.
+- Measure the direction and rate over at least 30–60 minutes.
+- Compare controlled tests with Frame Sync on and off.
+- Avoid applying PPM correction until the drift is repeatable and the affected timing path is known.
 
 ### Duplicate DistroAV menus
 

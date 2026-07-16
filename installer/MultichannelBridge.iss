@@ -1,6 +1,9 @@
 #ifndef AppVersion
   #define AppVersion "0.3.1-alpha"
 #endif
+#ifndef AppNumericVersion
+  #define AppNumericVersion "0.3.1.0"
+#endif
 #ifndef SourceRoot
   #define SourceRoot "..\obs-install"
 #endif
@@ -40,11 +43,11 @@ Uninstallable=yes
 UninstallDisplayName={#AppName} {#AppVersion}
 LicenseFile={#SourceRoot}\DISTROAV-GPL-LICENSE.txt
 InfoAfterFile={#SourceRoot}\README.md
-VersionInfoVersion=0.3.1.0
+VersionInfoVersion={#AppNumericVersion}
 VersionInfoCompany=Andrew Carriker and contributors
 VersionInfoDescription=Installer for Multichannel Bridge for DistroAV
 VersionInfoProductName={#AppName}
-VersionInfoProductVersion={#AppVersion}
+VersionInfoProductVersion={#AppNumericVersion}
 
 [Files]
 Source: "{#SourceRoot}\obs-plugins\*"; DestDir: "{app}\obs-plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -54,7 +57,7 @@ Source: "{#SourceRoot}\Uninstall-MultichannelBridge.ps1"; DestDir: "{app}"; Flag
 Source: "{#SourceRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\INSTALL-BOTH-PCS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\RELEASE-NOTES.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceRoot}\ROADMAP.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\ROADMAP.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SourceRoot}\LICENSE-NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\DISTROAV-GPL-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 

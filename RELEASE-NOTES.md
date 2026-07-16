@@ -27,3 +27,8 @@
 - Installer, workflow, and PowerShell scripts were structurally reviewed in the source-generation environment.
 - GitHub Actions is the authoritative Windows compile and Inno Setup build test.
 - Treat this as controlled-test alpha software and verify with a long local recording before live production.
+
+### Installer build hotfix 2
+
+- Fixed Inno Setup EXE compilation for prerelease labels such as `0.3.1-alpha`. Windows version-resource fields now receive a numeric four-part version (`0.3.1.0`) while the human-readable product version and filename retain `0.3.1-alpha`.
+- Added the personal-project and limited-support disclaimer to the README.
