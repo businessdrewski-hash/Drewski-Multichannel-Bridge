@@ -1,0 +1,10 @@
+NDI Multichannel Bridge additions
+
+Copyright (c) 2026
+
+These additions are distributed under the GNU General Public License version 2 or later
+to remain compatible with the patched DistroAV project. See the DistroAV source tree's
+LICENSE file in built/source distributions for the full license text.
+
+This project is experimental and is not affiliated with or endorsed by DistroAV,
+OBS Project, or Vizrt NDI AB.
