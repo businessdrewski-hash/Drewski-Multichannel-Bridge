@@ -28,9 +28,9 @@ expected = {
     "Role", "TrackA", "TrackB", "ReceiverSource", "ProgramProxyName", "MicProxyName",
     "SuppressOriginal", "GovernorEnabled", "GovernorAutoConfigure", "GovernorMaxSkewMs",
     "GovernorVideoStallMs", "GovernorPlayoutDelayMs", "GovernorDriftCorrection",
-    "GovernorMaxVideoCorrectionMs", "GovernorCorrectionSlewPpm", "GovernorRelockPairs",
+    "GovernorMaxAudioCorrectionPpm", "GovernorCorrectionSlewPpm", "GovernorRelockPairs",
     "GovernorBaselineWindowMs", "GovernorDriftWindowMs", "GovernorDriftMinimumMs",
-    "GovernorDriftDeadbandPpm",
+    "GovernorCorrectionDeadZoneMs",
 }
 if defaults != expected:
     missing = sorted(expected - defaults)

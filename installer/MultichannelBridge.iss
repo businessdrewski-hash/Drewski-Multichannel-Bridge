@@ -1,8 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "0.5.1-alpha1"
+  #define AppVersion "0.6.0-alpha1"
 #endif
 #ifndef AppNumericVersion
-  #define AppNumericVersion "0.5.1.0"
+  #define AppNumericVersion "0.6.0.0"
 #endif
 #ifndef SourceRoot
   #define SourceRoot "..\obs-install"

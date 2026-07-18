@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply Multichannel Bridge for DistroAV v0.5.1-alpha1 to DistroAV 6.2.1.
+"""Apply Multichannel Bridge for DistroAV v0.6.0-alpha1 to DistroAV 6.2.1.
 
 The resulting custom DistroAV package is installed on BOTH computers. The OBS
 Dock selects Gaming PC / Sender or Stream PC / Receiver.
@@ -13,10 +13,10 @@ performs no allocation and adds no callback mutex wait.
 Receiver mode intercepts DistroAV's raw planar NDI audio before OBS remixes it,
 then exposes channels 1-2 and 3-4 as two independent stereo OBS mixer sources.
 
-A/V Governor 1.3 observes the sender and receiver timing paths without replacing
-DistroAV's proven synthesized NDI transport timecodes. On the receiver it adds one shared playout delay, gently paces video timestamps
-for verified gradual drift, and atomically holds/re-locks both paths after stalls
-or timestamp discontinuities.
+Downstream Sync Core 2.0 observes the video and split-audio timelines after they
+enter OBS. Video remains the master and passes through untouched. One shared,
+slew-limited audio-rate command corrects both stereo outputs together after
+stable long-window evidence, with trusted-reference recovery after discontinuities.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import re
 import shutil
 from pathlib import Path
 
-PATCH_MARKER = "Multichannel Bridge for DistroAV v0.5.1-alpha1"
+PATCH_MARKER = "Multichannel Bridge for DistroAV v0.6.0-alpha1"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -51,8 +51,8 @@ def patch_cmake(path: Path) -> None:
     text = regex_once(
         text,
         r"^(?P<indent>[ \t]*)src/main-output\.h[ \t]*$",
-        r"\g<0>\n\g<indent>src/av-governor.cpp\n\g<indent>src/av-governor.h"
-        r"\n\g<indent>src/sender-sync-core.cpp\n\g<indent>src/sender-sync-core.h"
+        r"\g<0>\n\g<indent>src/sender-sync-core.cpp\n\g<indent>src/sender-sync-core.h"
+        r"\n\g<indent>src/downstream-sync-core.cpp\n\g<indent>src/downstream-sync-core.h"
         r"\n\g<indent>src/multichannel-bridge.cpp\n\g<indent>src/multichannel-bridge.h",
         "CMake source list",
     )
@@ -192,7 +192,7 @@ def patch_ndi_source(path: Path) -> None:
     text = replace_once(text, old, new, "raw receiver audio hook")
     old_video = "\tobs_source_output_video(obs_source, obs_video_frame);\n"
     new_video = (
-        "\t// A/V Governor: map audio and video onto one future OBS playout timeline.\n"
+        "\t// Downstream Sync Core observes video later in OBS; keep this handoff untouched.\n"
         "\tif (mcb_receiver_route_video(obs_source, obs_video_frame,\n"
         "\t\t\tndi_video_frame->timestamp, ndi_video_frame->timecode))\n"
         "\t\tobs_source_output_video(obs_source, obs_video_frame);\n"
@@ -244,7 +244,7 @@ def patch_ndi_output(path: Path) -> None:
     )
 
     state_types = r'''
-// Multichannel Bridge for DistroAV v0.5.1-alpha1. SenderSyncCore owns all
+// Multichannel Bridge for DistroAV v0.6.0-alpha1. SenderSyncCore owns all
 // sample storage up front. The atomic flag is a non-blocking safety guard: OBS
 // normally serializes selected-mixer callbacks, but an unexpected concurrent
 // callback is dropped instead of waiting on the real-time audio thread.
@@ -498,10 +498,10 @@ void ndi_output_rawaudio2(void *data, size_t mix_idx, audio_data *frame)
 
 def copy_bridge_files(root: Path, bridge_dir: Path) -> None:
     for name in (
-        "av-governor.cpp",
-        "av-governor.h",
         "sender-sync-core.cpp",
         "sender-sync-core.h",
+        "downstream-sync-core.cpp",
+        "downstream-sync-core.h",
         "multichannel-bridge.cpp",
         "multichannel-bridge.h",
     ):
@@ -514,16 +514,16 @@ def copy_bridge_files(root: Path, bridge_dir: Path) -> None:
 
 def write_notice(root: Path) -> None:
     (root / "MULTICHANNEL-BRIDGE.md").write_text(
-        "# Multichannel Bridge for DistroAV v0.5.1-alpha1\n\n"
+        "# Multichannel Bridge for DistroAV v0.6.0-alpha1\n\n"
         "Custom DistroAV 6.2.1 build. Install the same package on both PCs, then use "
         "Docks > Multichannel Bridge for DistroAV to select Gaming PC / Sender or Stream PC / Receiver.\n\n"
         "Sender defaults: OBS Track 5 -> NDI channels 1-2; OBS Track 6 -> channels 3-4.\n"
         "Receiver: one normal DistroAV NDI Source provides video while the bridge exposes the two stereo "
         "pairs as independent OBS audio-only sources.\n\n"
         "Sender Sync Core 2.0 uses fixed preallocated audio storage, canonical mix-interval timestamps, "
-        "automatic discontinuity re-anchoring, and no blocking callback lock. A/V Governor 1.3 uses "
-        "DistroAV's synthesized transport timecodes, one shared playout delay, bounded video pacing, "
-        "and trusted-reference recovery with fail-safe bypass after stalls or timestamp jumps. It is optional and enabled by default.\n\n"
+        "automatic discontinuity re-anchoring, and no blocking callback lock. Downstream Sync Core 2.0 "
+        "measures the OBS-facing video/audio relationship, leaves video untouched, and applies one linked "
+        "audio-rate correction to both stereo outputs. It is optional and enabled by default.\n\n"
         "Experimental. Not affiliated with or endorsed by DistroAV. DistroAV remains GPL-2.0-or-later.\n",
         encoding="utf-8",
         newline="\n",
@@ -536,10 +536,10 @@ def verify(root: Path) -> None:
         for path in (
             "src/ndi-output.cpp",
             "src/ndi-source.cpp",
-            "src/av-governor.cpp",
-            "src/av-governor.h",
             "src/sender-sync-core.cpp",
             "src/sender-sync-core.h",
+            "src/downstream-sync-core.cpp",
+            "src/downstream-sync-core.h",
             "src/main-output.cpp",
             "src/plugin-main.cpp",
             "src/multichannel-bridge.cpp",
@@ -557,20 +557,20 @@ def verify(root: Path) -> None:
         "mcb_receiver_route_audio(obs_source, obs_audio_frame, channelCount,",
         "mcb_receiver_route_video(obs_source, obs_video_frame,",
         "NDIlib_send_timecode_synthesize",
-        'kGovernorVersion = "1.3"',
-        "GovernorPlayoutDelayMs",
+        'kGovernorVersion = "2.0"',
+        "GovernorMaxAudioCorrectionPpm",
         "governor_flight_recorder_csv",
         "mcb_receiver_route_video",
         "mcb_force_reconnect_proc",
         "void mcb_force_reconnect(out bool accepted)",
-        "class AVGovernor",
         "mcb_sender_status_sync",
         "class SenderSyncCore",
+        "class DownstreamSyncCore",
         "mcb_sender_reanchor_generation",
         "mcb_sender_observe_video",
         "mcb_sender_status_sync",
         "src/sender-sync-core.cpp",
-        "src/av-governor.cpp",
+        "src/downstream-sync-core.cpp",
         "src/multichannel-bridge.cpp",
         "Track A and Track B must be different",
     ]

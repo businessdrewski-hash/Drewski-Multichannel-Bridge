@@ -1,4 +1,27 @@
-# v0.5.1-alpha1 release notes
+# v0.6.0-alpha1 release notes
+
+## Long-recording drift correction
+
+- Replaces receiver video timestamp pacing with Downstream Sync Core 2.0.
+- Observes the canonical video and split-audio timelines after they enter OBS, which exposes drift that was invisible at the earlier receiver hook.
+- Keeps video as the master clock and leaves its timestamps unchanged.
+- Measures native audio drift before correction and retains the first trusted reference across every later trend window.
+- Applies one shared, slew-limited PPM command to desktop/game and microphone, preserving their relative timing.
+- Uses fixed preallocated interpolation buffers; the receiver audio callback does not allocate, log, touch UI, or wait on a mutex.
+- Preserves accumulated corrected timing across raw input timestamp re-anchors and verifies the recovered output against the trusted reference.
+- Adds a deterministic 2.5-hour simulation of 22.22 ppm audio error: 200 ms raw late drift is detected while corrected output remains near the trusted sync.
+
+## Compact UI and defaults
+
+- Keeps the existing Setup and Numbers toggles and the same compact monitor layout.
+- Shows OBS-facing A/V, corrected change, trusted reference, native drift, and linked audio correction without adding a permanent wall of controls.
+- Keeps expert controls collapsed by default.
+- Recommended defaults are 1000 ppm maximum correction, 100 ppm/second slew, a 4 ms dead zone, a five-second baseline, and a 30-to-120-second evidence window.
+
+## Windows workflow correction
+
+- Checks the PowerShell installer-state script with `$?` rather than native-process `$LASTEXITCODE`.
+- Prevents a successful serialization test from being reported as `Installer-state test failed with exit code` followed by an empty value.
 
 ## Trusted recovery and drift safety
 
@@ -6,7 +29,7 @@
 - Requires five stable seconds before accepting the initial reference or a recovery candidate.
 - Quarantines two seconds of observations after a fault so a jump cannot contaminate baseline or drift calculations.
 - Rejects a recovered offset that differs materially from the trusted reference instead of silently declaring it normal.
-- Requires at least 30 seconds of persistent drift evidence, with entry/exit hysteresis, before pacing video timestamps.
+- Requires at least 30 seconds of persistent drift evidence before changing the linked audio rate.
 - Reports when correction reaches its safe limit.
 - Performs one automatic in-place receiver reconnect even when the dock is hidden, then fails open and stops automatic interference if safe recovery cannot be verified or recovery repeats too often.
 
@@ -20,11 +43,9 @@
 - Applies Keep Active alongside Frame Sync off, Source Timecode, and audio enabled in recommended receiver settings.
 - Makes floating bridge windows inherit OBS's normal application icon instead of the generic blank-page icon.
 
-## Protected diagnostics
+## Downstream diagnostics
 
-- Splits the fixed flight recorder into protected critical-event capacity and rate-limited telemetry capacity.
-- Prevents routine correction updates from overwriting the jump, hold, verification, lock, or failure evidence needed for diagnosis.
-- Adds trusted reference, recovery candidate, clock-domain offset, and fail-safe state to CSV export.
+- Exports the trusted reference, raw cumulative deviation, corrected deviation, native drift, linked correction, observations, and adjusted-frame count.
 
 ## Buildfix3 installer correction
 
@@ -77,14 +98,14 @@ The two selected OBS tracks are already rendered by the same OBS audio engine be
 ## Stability audit
 
 - Receiver callback routing no longer waits on the receiver UI/lifecycle mutex; it safely leaves the original path active if the lock is temporarily busy.
-- Receiver fade buffers are fixed-size and cannot allocate during a recovery callback.
+- Receiver resampling buffers are fixed-size and cannot allocate during an audio callback.
 - All 20 saved settings are checked for default, load/runtime, and save paths.
 - A callback-safety test rejects sender vectors, deques, mutexes, dynamic growth, UI work, file work, or callback logging.
 - Sender tests cover 10,000 normal pair cycles, canonical timestamps, discontinuities, manual re-anchor, missing-track fallback, oversized-block rejection, and the one-megabyte state budget.
 
 ## Receiver behavior
 
-A/V Governor 1.3 and the two split receiver sources remain available. The four-channel mapping remains unchanged:
+Downstream Sync Core 2.0 and the two split receiver sources are enabled by default. The four-channel mapping remains unchanged:
 
 ```text
 OBS Track A -> NDI channels 1-2 -> Desktop / Game
@@ -96,8 +117,8 @@ OBS Track B -> NDI channels 3-4 -> Microphone
 The GitHub Action builds:
 
 ```text
-Multichannel-Bridge-for-DistroAV-Setup-v0.5.1-alpha1.exe
-Multichannel-Bridge-for-DistroAV-v0.5.1-alpha1-Portable-Windows-x64.zip
+Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha1.exe
+Multichannel-Bridge-for-DistroAV-v0.6.0-alpha1-Portable-Windows-x64.zip
 Multichannel-Bridge-DistroAV-6.2.1.patch
 SHA256SUMS.txt
 ```

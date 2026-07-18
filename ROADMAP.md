@@ -1,14 +1,13 @@
 # Roadmap
 
-## Implemented through 0.5.1-alpha1
+## Implemented through 0.6.0-alpha1
 
 - Stable trusted-reference learning, sample quarantine, and median jitter filtering
 - High-confidence drift-rate estimation after at least 30 seconds of persistent evidence
-- Frame-boundary, video-only timing correction
-- Shared OBS-native playout timeline
-- Trusted-reference recovery verification with fail-safe bypass and audio fade boundaries
-- Raw NDI-versus-OBS timing capture
-- Protected critical-event and rate-limited telemetry diagnostic export
+- Downstream OBS-facing video/audio measurement
+- Video-master timing with linked PPM correction for both stereo audio buses
+- Trusted-reference recovery verification with continuous corrected audio timing
+- Compact downstream-sync diagnostic export
 - Reviewable DistroAV patch artifact
 - Windows EXE installer workflow
 - Fixed-capacity, preallocated Sender Sync Core 2.0
@@ -34,4 +33,4 @@
 - Scene-independent split sources
 - Optional diagnostic upload bundle with privacy review
 - Authenticode signing
-- PPM audio correction only if testing proves real residual clock drift that video pacing cannot safely handle
+- Optional higher-quality band-limited resampling if listening tests justify more CPU cost

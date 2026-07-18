@@ -1,5 +1,5 @@
 #include "multichannel-bridge.h"
-#include "av-governor.h"
+#include "downstream-sync-core.h"
 #include "sender-sync-core.h"
 
 #include "main-output.h"
@@ -46,6 +46,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -56,43 +57,27 @@ constexpr const char *kSection = "NDIMultichannelBridge";
 constexpr const char *kDockId = "distroav_multichannel_bridge_v030";
 constexpr const char *kProgramSourceId = "ndi_multichannel_bridge_program_audio";
 constexpr const char *kMicSourceId = "ndi_multichannel_bridge_mic_audio";
-constexpr const char *kVersion = "0.5.1-alpha1";
-constexpr const char *kGovernorVersion = "1.3";
+constexpr const char *kVideoProbeFilterId = "ndi_multichannel_bridge_downstream_video_probe";
+constexpr const char *kAudioClockFilterId = "ndi_multichannel_bridge_linked_audio_clock";
+constexpr const char *kVideoProbeFilterName = "[MCB] Downstream Video Clock";
+constexpr const char *kAudioClockFilterName = "[MCB] Linked Audio Clock";
+constexpr const char *kAudioClockPairKey = "mcb_audio_clock_pair";
+constexpr const char *kVersion = "0.6.0-alpha1";
+constexpr const char *kGovernorVersion = "2.0";
 constexpr const char *kSenderCoreVersion = "2.0";
 constexpr const char *kDefaultProgramName = "MCB Desktop / Game";
 constexpr const char *kDefaultMicName = "MCB Microphone";
 
-const char *governor_phase_name(mcb::AVGovernorPhase phase)
+const char *sync_phase_name(mcb::DownstreamSyncPhase phase)
 {
 	switch (phase) {
-	case mcb::AVGovernorPhase::Bypassed: return "BYPASSED";
-	case mcb::AVGovernorPhase::WarmingUp: return "WARMING UP";
-	case mcb::AVGovernorPhase::Locked: return "LOCKED";
-	case mcb::AVGovernorPhase::Holding: return "HOLDING";
-	case mcb::AVGovernorPhase::Verifying: return "VERIFYING";
-	case mcb::AVGovernorPhase::Failed: return "NEEDS ATTENTION";
+	case mcb::DownstreamSyncPhase::Bypassed: return "BYPASSED";
+	case mcb::DownstreamSyncPhase::Learning: return "LEARNING";
+	case mcb::DownstreamSyncPhase::Locked: return "LOCKED";
+	case mcb::DownstreamSyncPhase::Verifying: return "VERIFYING";
+	case mcb::DownstreamSyncPhase::Failed: return "NEEDS ATTENTION";
 	}
 	return "UNKNOWN";
-}
-
-const char *governor_reason_name(mcb::AVGovernorReason reason)
-{
-	switch (reason) {
-	case mcb::AVGovernorReason::None: return "none";
-	case mcb::AVGovernorReason::Startup: return "startup";
-	case mcb::AVGovernorReason::VideoStall: return "video stall";
-	case mcb::AVGovernorReason::AudioDiscontinuity: return "audio timestamp jump";
-	case mcb::AVGovernorReason::VideoDiscontinuity: return "video timestamp jump";
-	case mcb::AVGovernorReason::AudioNonMonotonic: return "audio timestamp repeated/backward";
-	case mcb::AVGovernorReason::VideoNonMonotonic: return "video timestamp repeated/backward";
-	case mcb::AVGovernorReason::SkewExceeded: return "A/V deviation exceeded";
-	case mcb::AVGovernorReason::PlayoutDepthExceeded: return "shared playout depth left safe range";
-	case mcb::AVGovernorReason::SourceReconfigured: return "source timing changed";
-	case mcb::AVGovernorReason::ManualReset: return "manual reset";
-	case mcb::AVGovernorReason::BaselineMismatch: return "recovered timing did not match the trusted reference";
-	case mcb::AVGovernorReason::RecoveryLimit: return "too many recoveries in a short period";
-	}
-	return "unknown";
 }
 
 std::atomic_int g_role_cache{-1};
@@ -143,13 +128,13 @@ void ensure_defaults()
 	config_set_default_int(config, kSection, "GovernorVideoStallMs", 120);
 	config_set_default_int(config, kSection, "GovernorPlayoutDelayMs", 120);
 	config_set_default_bool(config, kSection, "GovernorDriftCorrection", true);
-	config_set_default_int(config, kSection, "GovernorMaxVideoCorrectionMs", 40);
-	config_set_default_int(config, kSection, "GovernorCorrectionSlewPpm", 1000);
+	config_set_default_int(config, kSection, "GovernorCorrectionSlewPpm", 100);
+	config_set_default_int(config, kSection, "GovernorMaxAudioCorrectionPpm", 1000);
 	config_set_default_int(config, kSection, "GovernorRelockPairs", 12);
 	config_set_default_int(config, kSection, "GovernorBaselineWindowMs", 5000);
 	config_set_default_int(config, kSection, "GovernorDriftWindowMs", 120000);
 	config_set_default_int(config, kSection, "GovernorDriftMinimumMs", 30000);
-	config_set_default_int(config, kSection, "GovernorDriftDeadbandPpm", 8);
+	config_set_default_int(config, kSection, "GovernorCorrectionDeadZoneMs", 4);
 }
 
 void save_config()
@@ -201,6 +186,10 @@ struct ProxyContext {
 	int pair = 0;
 };
 
+obs_source_t *install_private_filter(obs_source_t *parent, const char *id,
+	const char *name, obs_data_t *settings = nullptr);
+void remove_private_filter(obs_source_t *parent, obs_source_t *&filter);
+
 class ReceiverRouter {
 public:
 	static ReceiverRouter &instance()
@@ -215,18 +204,33 @@ public:
 	{
 		if (pair < 0 || pair > 1 || !source)
 			return;
+		const size_t index = static_cast<size_t>(pair);
+		obs_data_t *settings = obs_data_create();
+		obs_data_set_int(settings, kAudioClockPairKey, pair);
+		obs_source_t *filter = install_private_filter(source, kAudioClockFilterId,
+			kAudioClockFilterName, settings);
+		obs_data_release(settings);
 		std::lock_guard<std::mutex> lock(mutex_);
-		proxies_[static_cast<size_t>(pair)] = source;
+		proxies_[index] = source;
+		audio_clock_filters_[index] = filter;
 	}
 
 	void unregister_proxy(int pair, obs_source_t *source)
 	{
 		if (pair < 0 || pair > 1)
 			return;
-		std::lock_guard<std::mutex> lock(mutex_);
-		auto &slot = proxies_[static_cast<size_t>(pair)];
-		if (slot == source)
-			slot = nullptr;
+		obs_source_t *filter = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			const size_t index = static_cast<size_t>(pair);
+			auto &slot = proxies_[index];
+			if (slot == source) {
+				slot = nullptr;
+				filter = audio_clock_filters_[index];
+				audio_clock_filters_[index] = nullptr;
+			}
+		}
+		remove_private_filter(source, filter);
 	}
 
 	bool attach(const std::string &name)
@@ -260,6 +264,8 @@ public:
 			input_name_ = name;
 			last_error_.clear();
 		}
+		video_probe_filter_ = install_private_filter(candidate, kVideoProbeFilterId,
+			kVideoProbeFilterName);
 		reset_stats();
 		refresh_source_configuration();
 		attached_.store(true, std::memory_order_release);
@@ -270,16 +276,20 @@ public:
 	void detach()
 	{
 		obs_source_t *old = nullptr;
+		obs_source_t *probe = nullptr;
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			old = input_;
+			probe = video_probe_filter_;
+			video_probe_filter_ = nullptr;
 			input_ = nullptr;
 			input_name_.clear();
 		}
+		remove_private_filter(old, probe);
 		if (old)
 			obs_source_release(old);
 		attached_.store(false, std::memory_order_release);
-		reset_governor(false);
+		sync_core_.reset(false, false);
 	}
 
 	void set_suppress_original(bool suppress)
@@ -287,13 +297,13 @@ public:
 		suppress_original_.store(suppress, std::memory_order_release);
 	}
 
-	void configure_governor(bool enabled, int max_deviation_ms, int video_stall_ms, int playout_delay_ms,
-		bool drift_correction, int max_video_correction_ms, int correction_slew_ppm, int relock_pairs,
-		int baseline_window_ms, int drift_window_ms, int drift_minimum_ms, int drift_deadband_ppm)
+	void configure_governor(bool enabled, bool drift_correction, int max_audio_correction_ppm,
+		int correction_slew_ppm, int baseline_window_ms, int drift_window_ms,
+		int drift_minimum_ms, int correction_dead_zone_ms)
 	{
-		governor_.configure(enabled, max_deviation_ms, video_stall_ms, playout_delay_ms, drift_correction,
-			max_video_correction_ms, correction_slew_ppm, relock_pairs, baseline_window_ms,
-			drift_window_ms, drift_minimum_ms, drift_deadband_ppm);
+		sync_core_.configure(enabled && drift_correction, max_audio_correction_ppm,
+			correction_slew_ppm, correction_dead_zone_ms, baseline_window_ms,
+			drift_window_ms, drift_minimum_ms);
 	}
 
 	bool apply_recommended_source_settings()
@@ -320,7 +330,7 @@ public:
 		obs_data_release(settings);
 		obs_source_release(source);
 		const bool reconnect_requested = force_reconnect();
-		governor_.set_source_configured(true);
+		sync_core_.reset(false, true);
 		obs_log(LOG_INFO,
 			"[multichannel-bridge] Applied recommended source timing and requested receiver reconnect: %s",
 			reconnect_requested ? "yes" : "procedure unavailable");
@@ -346,8 +356,7 @@ public:
 		calldata_free(&params);
 		obs_source_release(source);
 		if (accepted) {
-			governor_.set_source_configured(false);
-			governor_.set_source_configured(true);
+			sync_core_.reset(false, true);
 			obs_log(LOG_INFO, "[multichannel-bridge] Requested an in-place DistroAV receiver reconnect");
 		}
 		return accepted;
@@ -362,7 +371,7 @@ public:
 				source = obs_source_get_ref(input_);
 		}
 		if (!source) {
-			governor_.set_source_configured(false);
+			sync_core_.reset(false, true);
 			return false;
 		}
 		obs_data_t *settings = obs_source_get_settings(source);
@@ -371,7 +380,8 @@ public:
 		if (settings)
 			obs_data_release(settings);
 		obs_source_release(source);
-		governor_.set_source_configured(configured);
+		if (!configured)
+			sync_core_.reset(false, true);
 		return configured;
 	}
 
@@ -400,20 +410,11 @@ public:
 		packets_.fetch_add(1, std::memory_order_relaxed);
 		last_packet_ns_.store(now_ns, std::memory_order_relaxed);
 
-		mcb::AVGovernorDecision audio_decision{true, audio->timestamp};
-		if (split_active)
-			audio_decision = governor_.process_audio(audio->timestamp, now_ns, ndi_timestamp_100ns, ndi_timecode_100ns);
-		if (!audio_decision.accept) {
-			// Fail open. Timing protection must never make a live NDI source
-			// disappear while the governor is learning or re-locking.
-			audio_decision.accept = true;
-			audio_decision.output_timestamp_ns = audio->timestamp;
-			audio_decision.audio_gain_start = 1.0f;
-			audio_decision.audio_gain_end = 1.0f;
-		}
-
-		const bool apply_gain = audio->format == AUDIO_FORMAT_FLOAT_PLANAR &&
-			(audio_decision.audio_gain_start != 1.0f || audio_decision.audio_gain_end != 1.0f);
+		(void)ndi_timestamp_100ns;
+		(void)ndi_timecode_100ns;
+		// Keep the receiver handoff untouched. Private filters on both proxy
+		// sources observe the actual OBS-facing audio timeline and apply the same
+		// linked rate command after this point.
 		for (int pair = 0; pair < 2; ++pair) {
 			const int first = pair * 2;
 			const uint8_t *left = first < channel_count ? audio->data[first] : nullptr;
@@ -429,17 +430,6 @@ public:
 				left = right;
 			if (!right)
 				right = left;
-			if (apply_gain && audio->frames <= mcb::SenderSyncCore::kMaxFrames) {
-				auto &left_scratch = fade_scratch_[static_cast<size_t>(first)];
-				auto &right_scratch = fade_scratch_[static_cast<size_t>(first + 1)];
-				apply_gain_ramp(reinterpret_cast<const float *>(left), left_scratch, audio->frames,
-					audio_decision.audio_gain_start, audio_decision.audio_gain_end);
-				apply_gain_ramp(reinterpret_cast<const float *>(right), right_scratch, audio->frames,
-					audio_decision.audio_gain_start, audio_decision.audio_gain_end);
-				left = reinterpret_cast<const uint8_t *>(left_scratch.data());
-				right = reinterpret_cast<const uint8_t *>(right_scratch.data());
-			}
-
 			const float peak = mcb_ui_monitoring_enabled()
 				? calculate_peak(left, right, audio->frames)
 				: 0.0f;
@@ -452,7 +442,7 @@ public:
 				output.samples_per_sec = audio->samples_per_sec;
 				output.speakers = SPEAKERS_STEREO;
 				output.format = audio->format;
-				output.timestamp = audio_decision.output_timestamp_ns;
+				output.timestamp = audio->timestamp;
 				obs_source_output_audio(outputs[static_cast<size_t>(pair)], &output);
 				obs_source_release(outputs[static_cast<size_t>(pair)]);
 			}
@@ -481,18 +471,28 @@ public:
 		}
 		if (!selected || !split_active)
 			return true;
-		const auto decision = governor_.process_video(video->timestamp, os_gettime_ns(), ndi_timestamp_100ns, ndi_timecode_100ns);
-		if (decision.accept)
-			video->timestamp = decision.output_timestamp_ns;
-		// Fail open with the original DistroAV timestamp during acquisition or
-		// recovery. A timing controller may degrade to monitoring, never black video.
+		(void)ndi_timestamp_100ns;
+		(void)ndi_timecode_100ns;
+		// Video is the master clock. It passes through unchanged; an OBS async
+		// video filter observes its downstream timestamp for the audio controller.
 		return true;
 	}
 
-	mcb::AVGovernorSnapshot governor_snapshot() const { return governor_.snapshot(); }
-	std::string governor_flight_recorder_csv() const { return governor_.flight_recorder_csv(); }
+	mcb::DownstreamSyncSnapshot sync_snapshot() const { return sync_core_.snapshot(); }
+	std::string governor_flight_recorder_csv() const { return sync_core_.diagnostics_csv(); }
+	mcb::DownstreamSyncCore &sync_core() { return sync_core_; }
+	double linked_audio_correction_ppm(int pair)
+	{
+		if (pair == 0) {
+			const double command = sync_core_.correction_ppm();
+			linked_audio_command_ppm_.store(command, std::memory_order_release);
+			return command;
+		}
+		return linked_audio_command_ppm_.load(std::memory_order_acquire);
+	}
+	void controller_tick(uint64_t now_ns) { sync_core_.tick(now_ns); }
 
-	void reset_governor(bool reset_counters) { governor_.reset(reset_counters); }
+	void reset_governor(bool reset_counters) { sync_core_.reset(reset_counters, false); }
 
 	bool attached() const
 	{
@@ -548,18 +548,6 @@ public:
 	}
 
 private:
-	static void apply_gain_ramp(const float *input,
-		std::array<float, mcb::SenderSyncCore::kMaxFrames> &scratch, uint32_t frames,
-		float start_gain, float end_gain)
-	{
-		if (!input || frames == 0)
-			return;
-		const float denominator = frames > 1 ? static_cast<float>(frames - 1) : 1.0f;
-		const float step = (end_gain - start_gain) / denominator;
-		for (uint32_t i = 0; i < frames; ++i)
-			scratch[i] = input[i] * (start_gain + step * static_cast<float>(i));
-	}
-
 	static float calculate_peak(const uint8_t *left, const uint8_t *right, uint32_t frames)
 	{
 		if ((!left && !right) || frames == 0)
@@ -580,7 +568,9 @@ private:
 
 	mutable std::mutex mutex_;
 	obs_source_t *input_ = nullptr;
+	obs_source_t *video_probe_filter_ = nullptr;
 	std::array<obs_source_t *, 2> proxies_{};
+	std::array<obs_source_t *, 2> audio_clock_filters_{};
 	std::string input_name_;
 	std::string last_error_;
 	std::atomic_bool attached_{false};
@@ -591,9 +581,201 @@ private:
 	std::atomic_int channels_{0};
 	std::array<std::atomic<float>, 2> peaks_{};
 	std::atomic_uint64_t last_packet_ns_{0};
-	std::array<std::array<float, mcb::SenderSyncCore::kMaxFrames>, 4> fade_scratch_{};
-	mcb::AVGovernor governor_;
+	std::atomic<double> linked_audio_command_ppm_{0.0};
+	mcb::DownstreamSyncCore sync_core_;
 };
+
+struct LinkedAudioClockFilter {
+	static constexpr uint32_t kMaxInputFrames = 4096;
+	static constexpr uint32_t kMaxOutputFrames = 4128; // room for the ±5000 ppm hard clamp
+	int pair = 0;
+	uint32_t sample_rate = 48000;
+	uint64_t observed_generation = 0;
+	uint64_t expected_input_timestamp_ns = 0;
+	uint64_t next_output_timestamp_ns = 0;
+	uint64_t input_timestamp_remainder = 0;
+	uint64_t output_timestamp_remainder = 0;
+	double frame_remainder = 0.0;
+	int64_t net_frame_adjustment = 0;
+	bool timeline_initialized = false;
+	obs_audio_data output{};
+	std::array<std::array<float, kMaxOutputFrames>, MAX_AV_PLANES> planes{};
+};
+
+uint64_t audio_frames_to_ns(uint32_t frames, uint32_t sample_rate, uint64_t &remainder)
+{
+	if (!sample_rate)
+		return 0;
+	const uint64_t numerator = static_cast<uint64_t>(frames) * 1000000000ULL + remainder;
+	const uint64_t duration = numerator / sample_rate;
+	remainder = numerator % sample_rate;
+	return duration;
+}
+
+void reset_linked_audio_timeline(LinkedAudioClockFilter *filter, const obs_audio_data *audio,
+	bool preserve_output_timeline = false)
+{
+	if (!filter)
+		return;
+	filter->frame_remainder = 0.0;
+	filter->input_timestamp_remainder = 0;
+	filter->expected_input_timestamp_ns = audio ? audio->timestamp : 0;
+	if (!preserve_output_timeline || !filter->timeline_initialized) {
+		filter->output_timestamp_remainder = 0;
+		filter->next_output_timestamp_ns = audio ? audio->timestamp : 0;
+		filter->net_frame_adjustment = 0;
+	}
+	filter->timeline_initialized = audio && audio->timestamp;
+	if (filter->pair == 0)
+		ReceiverRouter::instance().sync_core().report_audio_output(
+			audio ? audio->timestamp : 0, os_gettime_ns(), 0, filter->sample_rate);
+}
+
+const char *video_probe_display_name(void *) { return "Multichannel Bridge Downstream Video Probe"; }
+const char *audio_clock_display_name(void *) { return "Multichannel Bridge Linked Audio Clock"; }
+
+void *video_probe_create(obs_data_t *, obs_source_t *) { return reinterpret_cast<void *>(1); }
+void video_probe_destroy(void *) {}
+
+obs_source_frame *video_probe_filter(void *, obs_source_frame *frame)
+{
+	if (frame && frame->timestamp)
+		ReceiverRouter::instance().sync_core().observe_video(frame->timestamp, os_gettime_ns());
+	return frame;
+}
+
+void *linked_audio_clock_create(obs_data_t *settings, obs_source_t *)
+{
+	auto *filter = new LinkedAudioClockFilter();
+	filter->pair = settings ? std::clamp(static_cast<int>(obs_data_get_int(settings, kAudioClockPairKey)), 0, 1) : 0;
+	obs_audio_info info{};
+	if (obs_get_audio_info(&info) && info.samples_per_sec)
+		filter->sample_rate = info.samples_per_sec;
+	return filter;
+}
+
+void linked_audio_clock_destroy(void *data)
+{
+	delete static_cast<LinkedAudioClockFilter *>(data);
+}
+
+obs_audio_data *linked_audio_clock_filter(void *data, obs_audio_data *audio)
+{
+	auto *filter = static_cast<LinkedAudioClockFilter *>(data);
+	if (!filter || !audio || !audio->frames)
+		return audio;
+	auto &core = ReceiverRouter::instance().sync_core();
+	const uint64_t wall_ns = os_gettime_ns();
+	if (filter->pair == 0)
+		core.observe_audio_input(audio->timestamp, wall_ns);
+
+	const uint64_t generation = core.filter_generation();
+	if (generation != filter->observed_generation) {
+		filter->observed_generation = generation;
+		reset_linked_audio_timeline(filter, audio, true);
+	}
+	if (!core.enabled()) {
+		reset_linked_audio_timeline(filter, audio, false);
+		return audio;
+	}
+
+	const double ppm = std::clamp(
+		ReceiverRouter::instance().linked_audio_correction_ppm(filter->pair), -5000.0, 5000.0);
+	if (!filter->timeline_initialized)
+		reset_linked_audio_timeline(filter, audio);
+	else if (audio->timestamp && filter->expected_input_timestamp_ns) {
+		const int64_t timestamp_error = audio->timestamp >= filter->expected_input_timestamp_ns
+			? static_cast<int64_t>(audio->timestamp - filter->expected_input_timestamp_ns)
+			: -static_cast<int64_t>(filter->expected_input_timestamp_ns - audio->timestamp);
+		if (std::llabs(timestamp_error) > 50000000LL)
+			reset_linked_audio_timeline(filter, audio, true);
+	}
+
+	const double stretch = 1.0 + ppm * 1.0e-6;
+	const double desired_frames = static_cast<double>(audio->frames) * stretch + filter->frame_remainder;
+	const uint32_t output_frames = static_cast<uint32_t>(std::max(1.0, std::floor(desired_frames)));
+	if (audio->frames > LinkedAudioClockFilter::kMaxInputFrames ||
+		output_frames > LinkedAudioClockFilter::kMaxOutputFrames) {
+		reset_linked_audio_timeline(filter, audio);
+		return audio;
+	}
+	filter->frame_remainder = desired_frames - static_cast<double>(output_frames);
+	filter->output = *audio;
+	filter->output.frames = output_frames;
+	filter->output.timestamp = filter->next_output_timestamp_ns
+		? filter->next_output_timestamp_ns : audio->timestamp;
+
+	if (output_frames == audio->frames) {
+		// No frame boundary is crossed in this block. Preserve the exact samples;
+		// the fractional command carries forward until one shared frame is added
+		// or removed from both stereo sources.
+		for (size_t channel = 0; channel < MAX_AV_PLANES; ++channel)
+			filter->output.data[channel] = audio->data[channel];
+	} else {
+		for (size_t channel = 0; channel < MAX_AV_PLANES; ++channel) {
+			if (!audio->data[channel]) {
+				filter->output.data[channel] = nullptr;
+				continue;
+			}
+			const float *input = reinterpret_cast<const float *>(audio->data[channel]);
+			auto &output = filter->planes[channel];
+			if (output_frames == 1 || audio->frames == 1) {
+				output[0] = input[0];
+			} else {
+				const double scale = static_cast<double>(audio->frames - 1) /
+					static_cast<double>(output_frames - 1);
+				for (uint32_t frame = 0; frame < output_frames; ++frame) {
+					const double position = static_cast<double>(frame) * scale;
+					const uint32_t left = static_cast<uint32_t>(position);
+					const uint32_t right = std::min(left + 1, audio->frames - 1);
+					const float fraction = static_cast<float>(position - static_cast<double>(left));
+					output[frame] = input[left] + (input[right] - input[left]) * fraction;
+				}
+			}
+			filter->output.data[channel] = reinterpret_cast<uint8_t *>(output.data());
+		}
+	}
+
+	if (audio->timestamp)
+		filter->expected_input_timestamp_ns = audio->timestamp +
+			audio_frames_to_ns(audio->frames, filter->sample_rate, filter->input_timestamp_remainder);
+	if (filter->output.timestamp)
+		filter->next_output_timestamp_ns = filter->output.timestamp +
+			audio_frames_to_ns(output_frames, filter->sample_rate, filter->output_timestamp_remainder);
+	filter->net_frame_adjustment += static_cast<int64_t>(output_frames) - static_cast<int64_t>(audio->frames);
+	if (filter->pair == 0)
+		core.report_audio_output(filter->output.timestamp, wall_ns,
+			filter->net_frame_adjustment, filter->sample_rate);
+	return &filter->output;
+}
+
+obs_source_t *install_private_filter(obs_source_t *parent, const char *id,
+	const char *name, obs_data_t *settings)
+{
+	if (!parent || !id || !name)
+		return nullptr;
+	obs_source_t *existing = obs_source_get_filter_by_name(parent, name);
+	if (existing) {
+		const char *existing_id = obs_source_get_unversioned_id(existing);
+		if (existing_id && std::strcmp(existing_id, id) == 0)
+			obs_source_filter_remove(parent, existing);
+		obs_source_release(existing);
+	}
+	obs_source_t *filter = obs_source_create_private(id, name, settings);
+	if (filter)
+		obs_source_filter_add(parent, filter);
+	return filter;
+}
+
+void remove_private_filter(obs_source_t *parent, obs_source_t *&filter)
+{
+	if (!filter)
+		return;
+	if (parent)
+		obs_source_filter_remove(parent, filter);
+	obs_source_release(filter);
+	filter = nullptr;
+}
 
 const char *program_source_name(void *) { return "Multichannel Bridge - Desktop / Game Audio"; }
 const char *mic_source_name(void *) { return "Multichannel Bridge - Microphone Audio"; }
@@ -952,7 +1134,7 @@ public:
 		receiver_form->addRow(add_receiver_here_);
 
 		governor_box_ = new QGroupBox(
-			QString("Automatic A/V protection (Governor %1)").arg(kGovernorVersion), receiver_box_);
+			QString("Automatic audio drift correction (Sync Core %1)").arg(kGovernorVersion), receiver_box_);
 		governor_box_->setCheckable(true);
 		auto *governor_form = new QFormLayout(governor_box_);
 		auto_configure_ = new QCheckBox(
@@ -960,8 +1142,7 @@ public:
 		playout_delay_ms_ = new QSpinBox(governor_box_);
 		playout_delay_ms_->setRange(40, 500);
 		playout_delay_ms_->setSuffix(" ms");
-		playout_delay_ms_->setToolTip(
-			"Adds the same fixed timestamp delay to audio and video so OBS can absorb brief arrival jitter before playout.");
+		playout_delay_ms_->setToolTip("Legacy setting retained for configuration compatibility; video is no longer delayed.");
 		max_skew_ms_ = new QSpinBox(governor_box_);
 		max_skew_ms_->setRange(40, 500);
 		max_skew_ms_->setSuffix(" ms");
@@ -973,17 +1154,17 @@ public:
 		video_stall_ms_->setToolTip(
 			"If video stops arriving for this long, audio is held before it can run ahead.");
 		drift_correction_ = new QCheckBox(
-			"Gently pace video timestamps to follow verified gradual audio-clock drift", governor_box_);
-		max_video_correction_ms_ = new QSpinBox(governor_box_);
-		max_video_correction_ms_->setRange(0, 120);
-		max_video_correction_ms_->setSuffix(" ms");
-		max_video_correction_ms_->setToolTip(
-			"Maximum temporary video timestamp correction. Audio samples are never resampled or cut.");
+			"Keep both audio tracks aligned to video automatically (recommended)", governor_box_);
+		max_audio_correction_ppm_ = new QSpinBox(governor_box_);
+		max_audio_correction_ppm_->setRange(25, 5000);
+		max_audio_correction_ppm_->setSuffix(" ppm");
+		max_audio_correction_ppm_->setToolTip(
+			"Maximum linked audio-rate correction. 1000 ppm is 0.1% and is used only to catch an existing offset; steady correction is normally much smaller.");
 		correction_slew_ppm_ = new QSpinBox(governor_box_);
-		correction_slew_ppm_->setRange(50, 10000);
-		correction_slew_ppm_->setSuffix(" ppm");
+		correction_slew_ppm_->setRange(1, 1000);
+		correction_slew_ppm_->setSuffix(" ppm/sec");
 		correction_slew_ppm_->setToolTip(
-			"Maximum speed at which video timing may move toward the measured drift. 1000 ppm equals 1 ms per second.");
+			"How quickly the linked desktop and microphone correction can change. Braking toward neutral is allowed at twice this rate.");
 		relock_pairs_ = new QSpinBox(governor_box_);
 		relock_pairs_->setRange(3, 60);
 		relock_pairs_->setSuffix(" pairs");
@@ -1003,15 +1184,14 @@ public:
 		drift_minimum_ms_->setRange(30000, 300000);
 		drift_minimum_ms_->setSuffix(" ms");
 		drift_minimum_ms_->setToolTip(
-			"A drift direction must persist for at least this long before video timing is adjusted.");
-		drift_deadband_ppm_ = new QSpinBox(governor_box_);
-		drift_deadband_ppm_->setRange(1, 250);
-		drift_deadband_ppm_->setSuffix(" ppm");
-		drift_deadband_ppm_->setToolTip(
-			"Ignore smaller estimated clock differences so normal jitter cannot trigger correction.");
+			"A downstream drift direction must persist for at least this long before audio is resampled.");
+		correction_dead_zone_ms_ = new QSpinBox(governor_box_);
+		correction_dead_zone_ms_->setRange(1, 50);
+		correction_dead_zone_ms_->setSuffix(" ms");
+		correction_dead_zone_ms_->setToolTip(
+			"Existing corrected error inside this range is left alone so normal callback jitter cannot cause hunting.");
 		governor_help_ = new QLabel(
-			"Keeps the last trusted sync through jumps, quarantines recovery samples, waits at least 30 seconds before drift correction, "
-			"and bypasses correction if safe recovery cannot be verified.", governor_box_);
+			"Measures the actual OBS-facing video and audio timelines, keeps video untouched, and applies one linked rate correction to desktop/game and microphone.", governor_box_);
 		governor_help_->setWordWrap(true);
 		governor_status_ = new QLabel(governor_box_);
 		governor_status_->setWordWrap(true);
@@ -1021,18 +1201,14 @@ public:
 		advanced_governor_panel_ = new QWidget(governor_box_);
 		auto *advanced_form = new QFormLayout(advanced_governor_panel_);
 		advanced_form->setContentsMargins(0, 0, 0, 0);
-		advanced_form->addRow("Hard A/V deviation limit:", max_skew_ms_);
-		advanced_form->addRow("Video-stall hold threshold:", video_stall_ms_);
-		advanced_form->addRow("Maximum video correction:", max_video_correction_ms_);
-		advanced_form->addRow("Video correction slew:", correction_slew_ppm_);
-		advanced_form->addRow("Minimum baseline observations:", relock_pairs_);
+		advanced_form->addRow("Maximum audio correction:", max_audio_correction_ppm_);
+		advanced_form->addRow("Correction slew:", correction_slew_ppm_);
 		advanced_form->addRow("Baseline learning time:", baseline_window_ms_);
 		advanced_form->addRow("Drift analysis window:", drift_window_ms_);
 		advanced_form->addRow("Minimum confirmed drift time:", drift_minimum_ms_);
-		advanced_form->addRow("Drift deadband:", drift_deadband_ppm_);
+		advanced_form->addRow("Correction dead zone:", correction_dead_zone_ms_);
 		advanced_governor_panel_->setVisible(false);
 		governor_form->addRow(auto_configure_);
-		governor_form->addRow("Shared playout delay:", playout_delay_ms_);
 		governor_form->addRow(drift_correction_);
 		governor_form->addRow(advanced_governor_);
 		governor_form->addRow(advanced_governor_panel_);
@@ -1068,10 +1244,10 @@ public:
 		apply_ = new QPushButton("Apply role and settings", body);
 		reset_stats_ = new QPushButton("Reset counters", body);
 		copy_diagnostics_ = new QPushButton("Copy diagnostics", body);
-		copy_flight_recorder_ = new QPushButton("Copy A/V flight recorder", body);
+		copy_flight_recorder_ = new QPushButton("Copy downstream sync CSV", body);
 		copy_flight_recorder_->setToolTip("Copies a bounded CSV timeline including raw NDI timestamp/timecode and OBS output timing.");
 		export_diagnostics_ = new QPushButton("Export diagnostics", body);
-		export_diagnostics_->setToolTip("Writes a timestamped diagnostics folder containing status and the A/V flight recorder.");
+		export_diagnostics_->setToolTip("Writes a timestamped diagnostics folder containing status and downstream sync data.");
 		actions->addWidget(apply_, 1);
 		actions->addWidget(reset_stats_);
 		actions->addWidget(copy_diagnostics_);
@@ -1135,14 +1311,14 @@ public:
 			max_skew_ms_->setValue(120);
 			video_stall_ms_->setValue(120);
 			drift_correction_->setChecked(true);
-			max_video_correction_ms_->setValue(40);
-			correction_slew_ppm_->setValue(1000);
+			max_audio_correction_ppm_->setValue(1000);
+			correction_slew_ppm_->setValue(100);
 			relock_pairs_->setValue(12);
 			baseline_window_ms_->setValue(5000);
 			drift_window_ms_->setValue(120000);
 			drift_minimum_ms_->setValue(30000);
-			drift_deadband_ppm_->setValue(8);
-			checklist_->setText("Recommended A/V Governor settings restored. Click Apply role and settings.");
+			correction_dead_zone_ms_->setValue(4);
+			checklist_->setText("Recommended downstream audio-sync settings restored. Click Apply role and settings.");
 		});
 		connect(open_source_, &QPushButton::clicked, this, [this] {
 			obs_source_t *source = obs_get_source_by_name(receiver_source_->currentText().toUtf8().constData());
@@ -1167,7 +1343,7 @@ public:
 		connect(copy_flight_recorder_, &QPushButton::clicked, this, [this] {
 			const std::string csv = ReceiverRouter::instance().governor_flight_recorder_csv();
 			QApplication::clipboard()->setText(QString::fromStdString(csv));
-			checklist_->setText("Recent A/V flight recorder copied as CSV.");
+			checklist_->setText("Downstream sync summary copied as CSV.");
 		});
 		connect(export_diagnostics_, &QPushButton::clicked, this, [this] { export_diagnostics(); });
 
@@ -1178,6 +1354,12 @@ public:
 		safety_timer_->setInterval(2000);
 		connect(safety_timer_, &QTimer::timeout, this, [this] { automatic_recovery_tick(); });
 		safety_timer_->start();
+		sync_timer_ = new QTimer(this);
+		sync_timer_->setInterval(250);
+		connect(sync_timer_, &QTimer::timeout, this, [] {
+			ReceiverRouter::instance().controller_tick(os_gettime_ns());
+		});
+		sync_timer_->start();
 	}
 
 	void frontend_finished_loading()
@@ -1274,7 +1456,7 @@ private:
 			.arg(static_cast<qulonglong>(status.reanchors)).arg(static_cast<qulonglong>(status.epoch)));
 	}
 
-	void update_receiver_monitor(const ReceiverRouter &router, const mcb::AVGovernorSnapshot &governor,
+	void update_receiver_monitor(const ReceiverRouter &router, const mcb::DownstreamSyncSnapshot &sync,
 		double receiver_age_ms)
 	{
 		monitor_program_label_->setText("Desktop + game");
@@ -1285,22 +1467,23 @@ private:
 		const size_t duplicate_count = matching_receiver_count(source_name);
 		const bool connection_ready = router.attached() && router.outputs_active() && router.channels() >= 4 &&
 			receiver_age_ms >= 0.0 && receiver_age_ms < 500.0;
-		const double skew_ms = static_cast<double>(governor.av_skew_ns) / 1e6;
-		const double deviation_ms = static_cast<double>(governor.baseline_deviation_ns) / 1e6;
-		const double correction_ms = static_cast<double>(governor.video_correction_ns) / 1e6;
+		const int64_t raw_relation_ns = sync.baseline_valid
+			? sync.baseline_ns + sync.raw_deviation_ns : sync.relation_ns;
+		const double raw_relation_ms = static_cast<double>(raw_relation_ns) / 1e6;
+		const double deviation_ms = static_cast<double>(sync.corrected_deviation_ns) / 1e6;
 		const double absolute_deviation = std::fabs(deviation_ms);
 		QString direction;
-		if (!governor.baseline_valid) {
-			direction = "Learning the normal relationship between the shared audio timeline and video.";
+		if (!sync.baseline_valid) {
+			direction = "Learning the OBS-facing relationship between video and the linked audio tracks.";
 		} else if (absolute_deviation < 2.0) {
 			direction = "<span style='color:#57c785'><b>Timelines aligned</b></span> — no track is meaningfully rushing or dragging.";
 		} else if (deviation_ms > 0.0) {
 			direction = QString(
-				"<span style='color:#e6b450'><b>Desktop + mic rushing</b></span> by %1 ms · video timeline dragging.")
+				"<span style='color:#e6b450'><b>Video rushing</b></span> by %1 ms · desktop + mic dragging.")
 				.arg(absolute_deviation, 0, 'f', 1);
 		} else {
 			direction = QString(
-				"<span style='color:#e6b450'><b>Video rushing</b></span> by %1 ms · desktop + mic timeline dragging.")
+				"<span style='color:#e6b450'><b>Desktop + mic rushing</b></span> by %1 ms · video dragging.")
 				.arg(absolute_deviation, 0, 'f', 1);
 		}
 		timing_summary_->setText(direction);
@@ -1313,26 +1496,25 @@ private:
 			set_health_banner("<b>Receiver waiting</b> — the complete four-channel feed is not active.",
 				"#e05d5d", "rgba(110,45,45,90)");
 			suggestion_->setText("<b>Suggested:</b> Open Setup, select the canonical receiver, then reconnect or repair outputs.");
-		} else if (!governor.enabled) {
+		} else if (!sync.enabled) {
 			set_health_banner("<b>Monitoring only</b> — split audio is healthy; automatic timing protection is off.",
 				"#b8bec9", "rgba(70,74,82,90)");
-			suggestion_->setText("<b>Suggested:</b> Leave off for raw DistroAV timing, or enable protection in Setup.");
-		} else if (governor.phase == mcb::AVGovernorPhase::Failed || governor.fail_safe_bypassed) {
+			suggestion_->setText("<b>Suggested:</b> Enable linked audio correction in Setup for long recordings.");
+		} else if (sync.phase == mcb::DownstreamSyncPhase::Failed) {
 			set_health_banner("<b>Needs attention</b> — trusted sync could not be restored; correction is bypassed.",
 				"#e05d5d", "rgba(110,45,45,90)");
 			suggestion_->setText("<b>Suggested:</b> Reconnect the existing receiver. Output is being kept live unchanged.");
-		} else if (governor.phase == mcb::AVGovernorPhase::Holding ||
-			governor.phase == mcb::AVGovernorPhase::Verifying ||
-			governor.phase == mcb::AVGovernorPhase::WarmingUp) {
-			set_health_banner(QString("<b>Recovering safely</b> — %1.").arg(governor_reason_name(governor.reason)),
+		} else if (sync.phase == mcb::DownstreamSyncPhase::Verifying ||
+			sync.phase == mcb::DownstreamSyncPhase::Learning) {
+			set_health_banner("<b>Learning downstream sync</b> — watching the timelines OBS actually receives.",
 				"#5aa9e6", "rgba(42,76,110,90)");
-			suggestion_->setText("<b>Suggested:</b> Leave it running. Normal output stays live while the trusted sync is verified.");
-		} else if (governor.correction_limited) {
+			suggestion_->setText("<b>Suggested:</b> Leave it running; correction begins only after stable evidence.");
+		} else if (sync.correction_limited) {
 			set_health_banner("<b>Drift exceeds the safe correction range</b> — protection will not chase it further.",
 				"#e6b450", "rgba(105,76,30,90)");
 			suggestion_->setText("<b>Suggested:</b> Check the audio device clock or reconnect the canonical receiver.");
-		} else if (std::fabs(correction_ms) >= 0.1) {
-			set_health_banner("<b>Correcting slow drift</b> — video timing is moving gently toward the trusted sync.",
+		} else if (sync.correction_active) {
+			set_health_banner("<b>Correcting slow drift</b> — both audio tracks are moving gently toward video.",
 				"#5aa9e6", "rgba(42,76,110,90)");
 			suggestion_->setText("<b>Suggested:</b> No action needed.");
 		} else {
@@ -1341,20 +1523,19 @@ private:
 			suggestion_->setText("<b>Suggested:</b> No action needed.");
 		}
 
-		const double drift_seconds = static_cast<double>(governor.drift_samples) * 0.25;
-		const QString drift_text = governor.drift_confidence >= 75
-			? QString("%1 ppm · verified").arg(static_cast<qlonglong>(governor.drift_ppm))
+		const double drift_seconds = static_cast<double>(sync.drift_samples) * 0.25;
+		const QString drift_text = sync.confidence >= 75
+			? QString("%1 ppm · verified").arg(static_cast<qlonglong>(sync.drift_ppm))
 			: QString("measuring · about %1 s collected").arg(drift_seconds, 0, 'f', 0);
 		monitor_numbers_->setText(QString(
-			"<b>Current A/V relation:</b> %1 ms &nbsp;·&nbsp; <b>Change from trusted sync:</b> %2 ms<br>"
-			"<b>Trusted reference:</b> %3 ms &nbsp;·&nbsp; <b>Drift:</b> %4<br>"
-			"<b>Video correction:</b> %5 ms &nbsp;·&nbsp; <b>Packet age:</b> %6 ms<br>"
-			"Recoveries %7 · failed recoveries %8 · missing desktop/mic %9/%10")
-			.arg(skew_ms, 0, 'f', 2).arg(deviation_ms, 0, 'f', 2)
-			.arg(static_cast<double>(governor.baseline_skew_ns) / 1e6, 0, 'f', 2)
-			.arg(drift_text).arg(correction_ms, 0, 'f', 2).arg(receiver_age_ms, 0, 'f', 1)
-			.arg(static_cast<qulonglong>(governor.atomic_recoveries))
-			.arg(static_cast<qulonglong>(governor.failed_recoveries))
+			"<b>Downstream raw A/V:</b> %1 ms &nbsp;·&nbsp; <b>Corrected change:</b> %2 ms<br>"
+			"<b>Trusted reference:</b> %3 ms &nbsp;·&nbsp; <b>Native drift:</b> %4<br>"
+			"<b>Linked audio correction:</b> %5 ppm &nbsp;·&nbsp; <b>Packet age:</b> %6 ms<br>"
+			"Adjusted frames %7 · missing desktop/mic %8/%9")
+			.arg(raw_relation_ms, 0, 'f', 2).arg(deviation_ms, 0, 'f', 2)
+			.arg(static_cast<double>(sync.baseline_ns) / 1e6, 0, 'f', 2)
+			.arg(drift_text).arg(sync.correction_ppm, 0, 'f', 1).arg(receiver_age_ms, 0, 'f', 1)
+			.arg(static_cast<qlonglong>(sync.net_frame_adjustment))
 			.arg(static_cast<qulonglong>(router.missing_program()))
 			.arg(static_cast<qulonglong>(router.missing_mic())));
 	}
@@ -1443,10 +1624,10 @@ private:
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorPlayoutDelayMs")) : 120);
 		drift_correction_->setChecked(
 			config ? config_get_bool(config, kSection, "GovernorDriftCorrection") : true);
-		max_video_correction_ms_->setValue(
-			config ? static_cast<int>(config_get_int(config, kSection, "GovernorMaxVideoCorrectionMs")) : 40);
+		max_audio_correction_ppm_->setValue(
+			config ? static_cast<int>(config_get_int(config, kSection, "GovernorMaxAudioCorrectionPpm")) : 1000);
 		correction_slew_ppm_->setValue(
-			config ? static_cast<int>(config_get_int(config, kSection, "GovernorCorrectionSlewPpm")) : 1000);
+			config ? static_cast<int>(config_get_int(config, kSection, "GovernorCorrectionSlewPpm")) : 100);
 		relock_pairs_->setValue(
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorRelockPairs")) : 12);
 		baseline_window_ms_->setValue(
@@ -1455,8 +1636,8 @@ private:
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorDriftWindowMs")) : 120000);
 		drift_minimum_ms_->setValue(
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorDriftMinimumMs")) : 30000);
-		drift_deadband_ppm_->setValue(
-			config ? static_cast<int>(config_get_int(config, kSection, "GovernorDriftDeadbandPpm")) : 8);
+		correction_dead_zone_ms_->setValue(
+			config ? static_cast<int>(config_get_int(config, kSection, "GovernorCorrectionDeadZoneMs")) : 4);
 		apply_->setEnabled(confirm_->isChecked());
 	}
 
@@ -1477,7 +1658,7 @@ private:
 		} else if (receiver_radio_->isChecked()) {
 			checklist_->setText(
 				"<b>Receiver checklist:</b> Add one normal DistroAV NDI Source, select it above, leave the "
-				"A/V Governor on, then create the two split mixer sources. Recommended timing settings are applied automatically.");
+				"automatic audio drift correction on, then create the two split mixer sources. Recommended timing settings are applied automatically.");
 		} else {
 			checklist_->setText("Select and confirm a role before using the bridge.");
 		}
@@ -1512,13 +1693,13 @@ private:
 		config_set_int(config, kSection, "GovernorVideoStallMs", video_stall_ms_->value());
 		config_set_int(config, kSection, "GovernorPlayoutDelayMs", playout_delay_ms_->value());
 		config_set_bool(config, kSection, "GovernorDriftCorrection", drift_correction_->isChecked());
-		config_set_int(config, kSection, "GovernorMaxVideoCorrectionMs", max_video_correction_ms_->value());
+		config_set_int(config, kSection, "GovernorMaxAudioCorrectionPpm", max_audio_correction_ppm_->value());
 		config_set_int(config, kSection, "GovernorCorrectionSlewPpm", correction_slew_ppm_->value());
 		config_set_int(config, kSection, "GovernorRelockPairs", relock_pairs_->value());
 		config_set_int(config, kSection, "GovernorBaselineWindowMs", baseline_window_ms_->value());
 		config_set_int(config, kSection, "GovernorDriftWindowMs", drift_window_ms_->value());
 		config_set_int(config, kSection, "GovernorDriftMinimumMs", drift_minimum_ms_->value());
-		config_set_int(config, kSection, "GovernorDriftDeadbandPpm", drift_deadband_ppm_->value());
+		config_set_int(config, kSection, "GovernorCorrectionDeadZoneMs", correction_dead_zone_ms_->value());
 		save_config();
 		set_role_cache(new_role);
 
@@ -1545,10 +1726,9 @@ private:
 		auto_reconnect_attempts_ = 0;
 		ReceiverRouter::instance().set_suppress_original(suppress_original_->isChecked());
 		ReceiverRouter::instance().configure_governor(
-			governor_box_->isChecked(), max_skew_ms_->value(), video_stall_ms_->value(),
-			playout_delay_ms_->value(), drift_correction_->isChecked(), max_video_correction_ms_->value(),
-			correction_slew_ppm_->value(), relock_pairs_->value(), baseline_window_ms_->value(),
-			drift_window_ms_->value(), drift_minimum_ms_->value(), drift_deadband_ppm_->value());
+			governor_box_->isChecked(), drift_correction_->isChecked(), max_audio_correction_ppm_->value(),
+			correction_slew_ppm_->value(), baseline_window_ms_->value(), drift_window_ms_->value(),
+			drift_minimum_ms_->value(), correction_dead_zone_ms_->value());
 		if (governor_box_->isChecked() && auto_configure_->isChecked())
 			ReceiverRouter::instance().apply_recommended_source_settings();
 		else
@@ -1589,11 +1769,11 @@ private:
 		const QByteArray recorder = QByteArray::fromStdString(
 			ReceiverRouter::instance().governor_flight_recorder_csv());
 		const QByteArray notes(
-			"This bundle contains OBS-side bridge status and a bounded A/V timing history.\n"
-			"The CSV includes raw NDI timestamp/timecode values, converted OBS timestamps,\n"
-			"playout depth, drift estimates, and recovery actions.\n");
+			"This bundle contains OBS-side downstream A/V status.\n"
+			"The CSV summarizes the trusted reference, native audio drift, linked audio correction,\n"
+			"and observations made after the canonical source entered OBS.\n");
 		const bool ok = write_text("bridge-status.txt", status) &&
-			write_text("av-governor-flight-recorder.csv", recorder) &&
+			write_text("downstream-sync.csv", recorder) &&
 			write_text("README.txt", notes);
 		if (!ok) {
 			QMessageBox::warning(this, "Diagnostics export", "One or more diagnostics files could not be written.");
@@ -1614,7 +1794,7 @@ private:
 		const double receiver_age = router.last_packet_ns() && now >= router.last_packet_ns()
 			? static_cast<double>(now - router.last_packet_ns()) / 1e6
 			: -1.0;
-		const auto governor = router.governor_snapshot();
+		const auto sync = router.sync_snapshot();
 		QString text = QString("Multichannel Bridge for DistroAV %1\nRole: %2\nOBS audio rate: %3 Hz\n")
 			.arg(kVersion)
 			.arg(mcb_is_sender() ? "Gaming PC / Sender" : mcb_is_receiver() ? "Stream PC / Receiver" : "Unconfigured")
@@ -1642,21 +1822,20 @@ private:
 		if (!mcb_is_receiver())
 			return text + "Status: setup required";
 
-		const double deviation = static_cast<double>(governor.baseline_deviation_ns) / 1e6;
+		const double deviation = static_cast<double>(sync.corrected_deviation_ns) / 1e6;
 		const QString direction = std::fabs(deviation) < 2.0
 			? "aligned"
-			: deviation > 0.0 ? "desktop + mic ahead; video dragging" : "video ahead; desktop + mic dragging";
+			: deviation > 0.0 ? "video ahead; linked audio dragging" : "linked audio ahead; video dragging";
 		text += QString(
 			"Receiver: %1\nCanonical source: %2\nReceivers using same NDI sender: %3\n"
 			"Split outputs: %4\nChannels: %5\nPackets / suppressed original: %6 / %7\n"
 			"Packet age: %8 ms\nMissing desktop / mic: %9 / %10\n"
-			"A/V Governor %11: %12\nState: %13\nReason: %14\nFail-safe bypass: %15\n"
-			"Timing direction: %16 by %17 ms\nCurrent raw / filtered relation: %18 / %19 ms\n"
-			"Trusted reference / recovery candidate: %20 / %21 ms\n"
-			"Drift: %22 ppm (%23 percent maturity, %24 samples)\nVideo correction / target: %25 / %26 ms\n"
-			"Correction limited: %27\nPlayout target / audio / video depth: %28 / %29 / %30 ms\n"
-			"Clock-domain offset: %31 ms\nDiscontinuities / recoveries / failed: %32 / %33 / %34\n"
-			"Quarantined samples: %35\nProtected recorder events: %36\nEpoch: %37")
+			"Downstream Sync Core %11: %12\nState: %13\nMeasurement fresh: %14\n"
+			"Timing direction: %15 by %16 ms\nCorrected relation / trusted reference: %17 / %18 ms\n"
+			"Raw / corrected change: %19 / %20 ms\nNative audio error: %21 ppm (%22 percent confidence, %23 samples)\n"
+			"Linked audio correction / target: %24 / %25 ppm\nCorrection limited: %26\n"
+			"Adjusted frames / corrected blocks: %27 / %28\n"
+			"Video / audio observations: %29 / %30\nDiscontinuities / quarantined: %31 / %32")
 			.arg(router.attached() ? "attached" : "not attached")
 			.arg(QString::fromUtf8(router.input_name().c_str()))
 			.arg(static_cast<qulonglong>(matching_receiver_count(router.input_name())))
@@ -1664,27 +1843,22 @@ private:
 			.arg(static_cast<qulonglong>(router.packets())).arg(static_cast<qulonglong>(router.suppressed()))
 			.arg(receiver_age, 0, 'f', 1).arg(static_cast<qulonglong>(router.missing_program()))
 			.arg(static_cast<qulonglong>(router.missing_mic())).arg(kGovernorVersion)
-			.arg(governor.enabled ? "enabled" : "disabled").arg(governor_phase_name(governor.phase))
-			.arg(governor_reason_name(governor.reason)).arg(governor.fail_safe_bypassed ? "yes" : "no")
+			.arg(sync.enabled ? "enabled" : "disabled").arg(sync_phase_name(sync.phase))
+			.arg(sync.measurement_fresh ? "yes" : "no")
 			.arg(direction).arg(std::fabs(deviation), 0, 'f', 2)
-			.arg(static_cast<double>(governor.raw_av_skew_ns) / 1e6, 0, 'f', 3)
-			.arg(static_cast<double>(governor.av_skew_ns) / 1e6, 0, 'f', 3)
-			.arg(static_cast<double>(governor.baseline_skew_ns) / 1e6, 0, 'f', 3)
-			.arg(static_cast<double>(governor.candidate_baseline_skew_ns) / 1e6, 0, 'f', 3)
-			.arg(static_cast<qlonglong>(governor.drift_ppm)).arg(governor.drift_confidence)
-			.arg(governor.drift_samples)
-			.arg(static_cast<double>(governor.video_correction_ns) / 1e6, 0, 'f', 3)
-			.arg(static_cast<double>(governor.target_video_correction_ns) / 1e6, 0, 'f', 3)
-			.arg(governor.correction_limited ? "yes" : "no")
-			.arg(static_cast<double>(governor.playout_delay_ns) / 1e6, 0, 'f', 1)
-			.arg(static_cast<double>(governor.audio_playout_depth_ns) / 1e6, 0, 'f', 1)
-			.arg(static_cast<double>(governor.video_playout_depth_ns) / 1e6, 0, 'f', 1)
-			.arg(static_cast<double>(governor.epoch_rebase_ns) / 1e6, 0, 'f', 3)
-			.arg(static_cast<qulonglong>(governor.discontinuities))
-			.arg(static_cast<qulonglong>(governor.atomic_recoveries))
-			.arg(static_cast<qulonglong>(governor.failed_recoveries))
-			.arg(static_cast<qulonglong>(governor.quarantined_samples))
-			.arg(governor.recorder_events).arg(static_cast<qulonglong>(governor.epoch));
+			.arg(static_cast<double>(sync.relation_ns) / 1e6, 0, 'f', 3)
+			.arg(static_cast<double>(sync.baseline_ns) / 1e6, 0, 'f', 3)
+			.arg(static_cast<double>(sync.raw_deviation_ns) / 1e6, 0, 'f', 3)
+			.arg(static_cast<double>(sync.corrected_deviation_ns) / 1e6, 0, 'f', 3)
+			.arg(static_cast<qlonglong>(sync.native_audio_error_ppm)).arg(sync.confidence)
+			.arg(sync.drift_samples).arg(sync.correction_ppm, 0, 'f', 2)
+			.arg(sync.target_ppm, 0, 'f', 2).arg(sync.correction_limited ? "yes" : "no")
+			.arg(static_cast<qlonglong>(sync.net_frame_adjustment))
+			.arg(static_cast<qulonglong>(sync.corrected_blocks))
+			.arg(static_cast<qulonglong>(sync.video_observations))
+			.arg(static_cast<qulonglong>(sync.audio_observations))
+			.arg(static_cast<qulonglong>(sync.discontinuities))
+			.arg(static_cast<qulonglong>(sync.quarantined_samples));
 		return text;
 	}
 
@@ -1693,8 +1867,8 @@ private:
 		if (!mcb_is_receiver() || auto_reconnect_attempts_ != 0)
 			return;
 		auto &router = ReceiverRouter::instance();
-		const auto governor = router.governor_snapshot();
-		if (!governor.fail_safe_bypassed)
+		const auto sync = router.sync_snapshot();
+		if (sync.phase != mcb::DownstreamSyncPhase::Failed)
 			return;
 		++auto_reconnect_attempts_;
 		const bool reconnected = router.force_reconnect();
@@ -1779,30 +1953,30 @@ private:
 		program_meter_->setValue(meter_value(router.peak(0)));
 		mic_meter_->setValue(meter_value(router.peak(1)));
 
-		const auto governor = router.governor_snapshot();
-		const double deviation = static_cast<double>(governor.baseline_deviation_ns) / 1e6;
+		const auto sync = router.sync_snapshot();
+		const double deviation = static_cast<double>(sync.corrected_deviation_ns) / 1e6;
 		const QString direction = std::fabs(deviation) < 2.0
 			? "aligned"
-			: deviation > 0.0 ? "audio ahead / video dragging" : "video ahead / audio dragging";
-		const QString drift = governor.drift_confidence >= 75
-			? QString("%1 ppm verified").arg(static_cast<qlonglong>(governor.drift_ppm))
+			: deviation > 0.0 ? "video ahead / audio dragging" : "audio ahead / video dragging";
+		const QString drift = sync.confidence >= 75
+			? QString("%1 ppm verified").arg(static_cast<qlonglong>(sync.native_audio_error_ppm))
 			: "still measuring";
 		governor_status_->setText(QString(
-			"<b>%1</b> · %2 by %3 ms<br>Trusted reference %4 ms · drift %5 · video correction %6 ms<br>"
-			"Recoveries %7 · failed %8 · quarantined samples %9")
-			.arg(QString::fromUtf8(governor_phase_name(governor.phase))).arg(direction)
+			"<b>%1</b> · %2 by %3 ms<br>Trusted reference %4 ms · native drift %5 · linked audio %6 ppm<br>"
+			"Adjusted frames %7 · discontinuities %8 · quarantined %9")
+			.arg(QString::fromUtf8(sync_phase_name(sync.phase))).arg(direction)
 			.arg(std::fabs(deviation), 0, 'f', 1)
-			.arg(static_cast<double>(governor.baseline_skew_ns) / 1e6, 0, 'f', 1)
-			.arg(drift).arg(static_cast<double>(governor.video_correction_ns) / 1e6, 0, 'f', 2)
-			.arg(static_cast<qulonglong>(governor.atomic_recoveries))
-			.arg(static_cast<qulonglong>(governor.failed_recoveries))
-			.arg(static_cast<qulonglong>(governor.quarantined_samples)));
-		governor_status_->setStyleSheet(governor.fail_safe_bypassed
+			.arg(static_cast<double>(sync.baseline_ns) / 1e6, 0, 'f', 1)
+			.arg(drift).arg(sync.correction_ppm, 0, 'f', 2)
+			.arg(static_cast<qlonglong>(sync.net_frame_adjustment))
+			.arg(static_cast<qulonglong>(sync.discontinuities))
+			.arg(static_cast<qulonglong>(sync.quarantined_samples)));
+		governor_status_->setStyleSheet(sync.phase == mcb::DownstreamSyncPhase::Failed
 			? "QLabel { color: #e05d5d; }"
-			: governor.phase == mcb::AVGovernorPhase::Locked
+			: sync.phase == mcb::DownstreamSyncPhase::Locked
 				? "QLabel { color: #57c785; }"
 				: "QLabel { color: #5aa9e6; }");
-		update_receiver_monitor(router, governor, receiver_age);
+		update_receiver_monitor(router, sync, receiver_age);
 		if (configuration_panel_->isVisible())
 			refresh_source_context();
 
@@ -1847,13 +2021,13 @@ private:
 	QSpinBox *max_skew_ms_ = nullptr;
 	QSpinBox *video_stall_ms_ = nullptr;
 	QCheckBox *drift_correction_ = nullptr;
-	QSpinBox *max_video_correction_ms_ = nullptr;
+	QSpinBox *max_audio_correction_ppm_ = nullptr;
 	QSpinBox *correction_slew_ppm_ = nullptr;
 	QSpinBox *relock_pairs_ = nullptr;
 	QSpinBox *baseline_window_ms_ = nullptr;
 	QSpinBox *drift_window_ms_ = nullptr;
 	QSpinBox *drift_minimum_ms_ = nullptr;
-	QSpinBox *drift_deadband_ppm_ = nullptr;
+	QSpinBox *correction_dead_zone_ms_ = nullptr;
 	QLabel *governor_help_ = nullptr;
 	QLabel *governor_status_ = nullptr;
 	QPushButton *recommended_governor_ = nullptr;
@@ -1872,6 +2046,7 @@ private:
 	QLabel *checklist_ = nullptr;
 	QTimer *timer_ = nullptr;
 	QTimer *safety_timer_ = nullptr;
+	QTimer *sync_timer_ = nullptr;
 	uint64_t last_restart_ns_ = 0;
 	uint32_t auto_reconnect_attempts_ = 0;
 };
@@ -1914,6 +2089,26 @@ size_t mcb_sender_track_b_zero_based() { return static_cast<size_t>(config_track
 
 void mcb_register_sources()
 {
+	obs_source_info video_probe_info{};
+	video_probe_info.id = kVideoProbeFilterId;
+	video_probe_info.type = OBS_SOURCE_TYPE_FILTER;
+	video_probe_info.output_flags = OBS_SOURCE_ASYNC_VIDEO;
+	video_probe_info.get_name = video_probe_display_name;
+	video_probe_info.create = video_probe_create;
+	video_probe_info.destroy = video_probe_destroy;
+	video_probe_info.filter_video = video_probe_filter;
+	obs_register_source(&video_probe_info);
+
+	obs_source_info audio_clock_info{};
+	audio_clock_info.id = kAudioClockFilterId;
+	audio_clock_info.type = OBS_SOURCE_TYPE_FILTER;
+	audio_clock_info.output_flags = OBS_SOURCE_AUDIO;
+	audio_clock_info.get_name = audio_clock_display_name;
+	audio_clock_info.create = linked_audio_clock_create;
+	audio_clock_info.destroy = linked_audio_clock_destroy;
+	audio_clock_info.filter_audio = linked_audio_clock_filter;
+	obs_register_source(&audio_clock_info);
+
 	g_program_info = create_proxy_info(kProgramSourceId, program_source_name, create_program_proxy);
 	g_mic_info = create_proxy_info(kMicSourceId, mic_source_name, create_mic_proxy);
 	obs_register_source(&g_program_info);

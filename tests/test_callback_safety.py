@@ -47,4 +47,24 @@ if "fade_scratch_" in BRIDGE and "std::array<std::array<float" not in BRIDGE:
 if "scratch.resize(" in BRIDGE:
     raise SystemExit("Receiver audio callback can allocate fade scratch storage")
 
+linked = re.search(
+    r"obs_audio_data \*linked_audio_clock_filter\(.*?\n\}(?=\n\nobs_source_t \*install_private_filter)",
+    BRIDGE,
+    flags=re.DOTALL,
+)
+if not linked:
+    raise SystemExit("Could not isolate linked receiver audio filter")
+linked_callback = linked.group(0)
+linked_violations = [token for token in forbidden_callback_tokens if token in linked_callback]
+if linked_violations:
+    raise SystemExit("Linked receiver callback contains forbidden operations: " + ", ".join(linked_violations))
+for marker in (
+    "std::array<std::array<float, kMaxOutputFrames>, MAX_AV_PLANES>",
+    "linked_audio_correction_ppm(filter->pair)",
+    "filter->frame_remainder",
+    "reset_linked_audio_timeline(filter, audio, true)",
+):
+    if marker not in BRIDGE:
+        raise SystemExit(f"Linked receiver callback safety marker is missing: {marker}")
+
 print("Callback safety audit passed")

@@ -23,6 +23,11 @@ for marker in workflow_markers:
     if marker not in workflow:
         raise SystemExit(f"Windows EXE delivery contract is missing: {marker}")
 
+if 'if (-not $?) { throw \'Installer-state PowerShell script reported failure.\' }' not in workflow:
+    raise SystemExit("PowerShell installer-state test is not checked with the script invocation status")
+if 'Installer-state test failed with exit code $LASTEXITCODE' in workflow:
+    raise SystemExit("PowerShell script invocation incorrectly relies on native-process LASTEXITCODE")
+
 installer_markers = (
     "SetupMutex=MultichannelBridgeForDistroAVSetup",
     "-ResultPath",

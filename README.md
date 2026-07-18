@@ -1,7 +1,7 @@
 # Multichannel Bridge for DistroAV
 
 > Experimental modified DistroAV build for two-PC OBS setups
-> Current version: **0.5.1-alpha1**
+> Current version: **0.6.0-alpha1**
 > Based on: **DistroAV 6.2.1**
 
 ## Personal project and support disclaimer
@@ -53,25 +53,24 @@ It:
 
 OBS has already converted selected tracks onto its own audio engine clock before the bridge receives them. The sender core therefore aligns OBS mix blocks without adding another resampler or attempting to infer hardware drift from callback arrival time.
 
-## A/V Governor 1.3
+## Downstream Sync Core 2.0
 
-The optional receiver-side timing guard runs before DistroAV submits received media to OBS.
+The optional receiver-side guard measures the timelines OBS actually receives after the canonical DistroAV source and split-audio handoff.
 
 It:
 
-- captures raw incoming NDI timestamp/timecode values beside the OBS timestamps produced by DistroAV;
-- projects audio and video to one common local instant and median-filters short arrival jitter;
+- observes video through a private asynchronous OBS filter and raw split audio at the input of private audio filters;
+- projects both observations to one local instant and median-filters short callback jitter;
 - learns an initial trusted A/V reference only after at least five stable seconds;
-- maps both streams onto the same future OBS playout timeline, using OBS's native asynchronous source queues instead of copying 4K video frames into another buffer;
-- estimates gradual drift only after a sustained, high-confidence trend is present;
-- keeps audio sample-perfect and applies bounded corrections only to video timestamps at video-frame boundaries;
-- quarantines samples after stalls, backward/repeated timestamps, large jumps, unsafe playout depth, or excessive movement away from the trusted reference;
-- verifies recovered timing against the last trusted reference instead of accepting a post-fault offset as the new normal;
-- makes one in-place receiver reconnect attempt even when the dock is hidden, then fails open with normal DistroAV timestamps if safe recovery cannot be verified;
-- protects critical fault/recovery events from being overwritten by routine CSV telemetry;
+- retains that first trusted reference, so the fifth or eighth measurement window still reports cumulative movement from the original lock;
+- estimates native audio clock error only after at least 30 seconds of sustained evidence;
+- leaves every video timestamp untouched and applies one slew-limited PPM correction to both stereo audio outputs;
+- uses fixed, preallocated interpolation storage and performs no allocation, UI work, logging, or mutex wait in the audio-filter callback;
+- preserves the accumulated linked-audio timeline through input timestamp re-anchors, then verifies it against the trusted reference;
+- makes one in-place receiver reconnect attempt even when the dock is hidden if verification fails;
 - presents a compact, color-coded health summary while keeping exact numbers and setup independently collapsible.
 
-The governor does not PPM-adjust, resample, stretch, or cut audio. See [`AV-GOVERNOR.md`](AV-GOVERNOR.md) for detailed behavior and limitations.
+See [`AV-GOVERNOR.md`](AV-GOVERNOR.md) for the detailed downstream measurement and correction behavior. The legacy filename is retained for existing links.
 
 ---
 
@@ -95,7 +94,7 @@ flowchart LR
 
     subgraph S[Stream PC]
         R[DistroAV NDI Source\nFrame Sync off + Source Timecode]
-        G1[A/V Governor 1.3\nTrusted reference + quarantined recovery + fail-safe bypass]
+        G1[Downstream Sync Core 2.0\nVideo master + linked audio PPM correction]
         X[Receiver splitter\nBefore OBS downmix]
         P[MCB Desktop / Game\nChannels 1-2]
         MIC[MCB Microphone\nChannels 3-4]
@@ -120,14 +119,13 @@ flowchart LR
 - One-click sender re-anchor and full NDI Main Output restart
 - No callback-time bridge allocation, queue growth, UI work, or added packing lock
 - Stable five-second trusted-reference learning and projected A/V comparison
-- Raw NDI timing fields recorded beside converted OBS timestamps
-- Shared configurable OBS-native playout timeline
-- Confidence-gated video-only drift correction after at least 30 seconds of one-direction evidence
+- Downstream OBS-facing video/audio observation after the receiver handoff
+- Video-master timing; received video timestamps remain untouched
+- Confidence-gated linked audio-rate correction after at least 30 seconds of one-direction evidence
 - Two-second fault-sample quarantine and recovery verification against the trusted reference
 - Fail-safe bypass if recovery differs materially from the trusted reference or repeatedly fails
-- Fade-assisted audio boundaries during recovery
-- Monotonic epoch rebasing after sender/source clock restarts
-- Protected critical-event and rate-limited telemetry flight recorders with one-click export
+- Continuous corrected audio timeline across receiver input re-anchors
+- Compact downstream-sync diagnostics with one-click export
 - Four-block fixed sender audio queues and preallocated silence fallback
 - Duplicate combined-audio suppression
 - One canonical receiver source with an add-existing-reference action for other scenes
@@ -165,7 +163,7 @@ Compatibility outside that environment is not guaranteed.
 
 Install the same release on both computers.
 
-1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.5.1-alpha1.exe`.
+1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha1.exe`.
 2. Close OBS completely.
 3. Run the installer as Administrator on both PCs.
 4. Select the root OBS folder, normally `C:\Program Files\obs-studio`.
@@ -195,25 +193,21 @@ The sender offers two recovery controls:
 1. Select **Stream PC / Receiver** and confirm the role.
 2. Add one normal DistroAV NDI Source and select the gaming-PC feed.
 3. Select that OBS source in the bridge dock.
-4. Leave **A/V Governor** and automatic source configuration enabled.
+4. Leave **Automatic audio drift correction** and automatic source configuration enabled.
 5. Click **Create / repair split audio sources**.
 6. Confirm `MCB Desktop / Game` and `MCB Microphone` appear independently in the mixer.
 7. Keep original-audio suppression enabled to avoid a duplicate downmix.
 
-Recommended governor defaults:
+Recommended correction defaults:
 
 ```text
-Shared playout delay:             120 ms
-Hard A/V deviation limit:         120 ms
-Video-stall hold threshold:       120 ms
 Baseline learning window:        5000 ms
 Drift analysis window:         120000 ms
 Minimum drift observation:      30000 ms
-Drift deadband:                     8 ppm
-Gradual video correction:         On
-Maximum video correction:          40 ms
-Video correction slew:           1000 ppm
-Minimum recovery observations:     12
+Correction dead zone:               4 ms
+Linked audio correction:           On
+Maximum audio correction:        1000 ppm
+Correction slew:                  100 ppm/sec
 NDI Frame Sync:                    Off
 Sync mode:                         Source Timecode
 NDI source behavior:               Keep Active
@@ -244,18 +238,19 @@ Split outputs active: yes
 Detected channels: 4
 Missing program: 0
 Missing mic: 0
-A/V Governor phase: LOCKED
+Downstream Sync Core phase: LOCKED
 Source timing configured: yes
-Baseline deviation: normally close to 0 ms
+Corrected change: normally close to 0 ms
+Native drift: verified after the analysis window matures
 ```
 
-A nonzero learned baseline is not automatically a problem. The governor protects movement **away from the learned normal offset** rather than forcing the two source timestamps to be numerically identical.
+A nonzero trusted reference is not automatically a problem. The core protects movement **away from the first learned normal offset** rather than forcing the source timestamps to be numerically identical.
 
 ---
 
 ## Troubleshooting
 
-### Governor remains WARMING UP or VERIFYING
+### Sync Core remains LEARNING or VERIFYING
 
 - Confirm the selected source is the combined bridge feed.
 - Confirm four audio channels are detected.
@@ -263,13 +258,13 @@ A nonzero learned baseline is not automatically a problem. The governor protects
 - Confirm Frame Sync is off and Source Timecode is selected.
 - Restart DistroAV Main Output and the receiving source if the sender changed while connected.
 
-### Governor enters HOLDING
+### Sync Core reports an incident
 
-The status line reports the reason. Common causes are video stall, backward/repeated timestamp, large timestamp jump, or A/V movement beyond the hard limit. Normal DistroAV output remains live while fault samples are quarantined. Copy diagnostics and the A/V flight recorder before changing settings.
+Common causes are a backward/repeated timestamp or a large timestamp-versus-wall jump. Video and audio remain live while fault samples are quarantined. Copy diagnostics before changing settings.
 
-### Governor says NEEDS ATTENTION
+### Sync Core says NEEDS ATTENTION
 
-Automatic correction has failed open because recovered timing did not safely match the trusted reference or too many recoveries occurred. The bridge makes one in-place receiver reconnect attempt; if the warning remains, use the brief suggested action, then export diagnostics before manually reconnecting or restarting the sender.
+Automatic correction has moved to neutral because recovered timing did not safely match the trusted reference. The bridge makes one in-place receiver reconnect attempt; if the warning remains, use the brief suggested action, then export diagnostics before manually reconnecting or restarting the sender.
 
 ### One scene has video but no split audio
 
@@ -277,7 +272,7 @@ Do not create multiple independent DistroAV receiver objects for the same sender
 
 ### Audio briefly cuts during a fault
 
-The governor now keeps normal DistroAV output visible while its internal model re-locks. Review `Bypassed A/V decisions`, `Discontinuities`, `Recoveries`, sender discards/fallback, and the CSV flight recorder. Timing protection must never turn a measurable sync problem into a black or silent feed.
+Sync Core never gates video. During re-lock its linked audio command moves to neutral while the corrected timeline is retained. Review discontinuities, quarantined samples, sender discards/fallback, and `downstream-sync.csv`.
 
 ### Duplicate DistroAV menus
 
@@ -293,8 +288,18 @@ More detail: [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
 
 ## Consolidated changelog
 
+### 0.6.0-alpha1
+
+- Replaced receiver-side video timestamp pacing with downstream, video-master measurement and linked PPM audio correction.
+- Leaves video untouched and resamples both desktop/game and microphone with the same command so their relative timing cannot diverge.
+- Measures native drift before correction, keeps the first trusted baseline across later analysis windows, and reports corrected movement separately.
+- Preserves accumulated audio timing through input re-anchors and verifies recovery against the trusted reference.
+- Keeps the dock compact; Setup, Numbers, and expert timing controls remain independently collapsed.
+- Adds a 2.5-hour, 200 ms late-audio simulation and callback-safety checks for the receiver filters.
+
 ### 0.5.1-alpha1
 
+- Fixed the Windows PowerShell 5.1 workflow wrapper so a successful installer-state script no longer fails because native-process `$LASTEXITCODE` is empty.
 - Preserves a last-known-good A/V reference through jumps and reconnects instead of learning the fault as a new baseline.
 - Requires at least five stable seconds for baseline acceptance, quarantines two seconds of post-fault samples, and verifies recovery against the trusted reference.
 - Waits at least 30 seconds before acting on gradual drift and adds correction hysteresis and limit reporting.

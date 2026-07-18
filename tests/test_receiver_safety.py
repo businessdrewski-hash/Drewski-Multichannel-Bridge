@@ -9,8 +9,8 @@ bridge = (ROOT / "hotfix/bridge/multichannel-bridge.cpp").read_text(encoding="ut
 patcher = (ROOT / "hotfix/scripts/patch_distroav.py").read_text(encoding="utf-8")
 
 required_bridge = (
-    "Fail open. Timing protection must never make a live NDI source",
-    "return true;\n\t}\n\n\tmcb::AVGovernorSnapshot governor_snapshot",
+    "Video is the master clock. It passes through unchanged",
+    "mcb::DownstreamSyncSnapshot sync_snapshot",
     "obs_source_set_audio_active(source, true);",
     "obs_source_set_muted(proxy, false);",
     "obs_source_set_audio_mixers(proxy, 0x3fU);",
@@ -19,6 +19,10 @@ required_bridge = (
     'obs_data_set_int(settings, "ndi_behavior", 0)',
     "matching_receiver_count",
     "add_existing_source_to_current_scene",
+    "LinkedAudioClockFilter",
+    "core.observe_audio_input(audio->timestamp, wall_ns)",
+    "core.report_audio_output",
+    "reset_linked_audio_timeline(filter, audio, true)",
 )
 for marker in required_bridge:
     if marker not in bridge:

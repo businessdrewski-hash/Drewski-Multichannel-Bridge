@@ -56,7 +56,7 @@ The restart action recreates only the Multichannel DistroAV Main Output and pres
 - Confirm four channels are detected and both proxy sources are active.
 - If another scene needs the receiver, use **Add this existing receiver to current scene**. Do not create a second independent receiver for the same NDI sender.
 
-## Governor remains WARMING UP or VERIFYING
+## Sync Core remains LEARNING or VERIFYING
 
 - Click **Restore recommended settings**, then Apply.
 - Confirm Frame Sync is off and Source Timecode is selected.
@@ -64,35 +64,28 @@ The restart action recreates only the Multichannel DistroAV Main Output and pres
 - Confirm both split sources are active.
 - Restart Main Output and the receiver source after upgrading both PCs.
 
-The initial trusted reference requires at least 12 sane observations over five stable seconds. After a fault, two seconds of samples are quarantined before a five-second recovery candidate is compared with that trusted reference. The adapter keeps normal DistroAV audio/video live during this process.
+The initial trusted reference requires at least 12 sane observations over five stable seconds. After a fault, two seconds of samples are quarantined before a five-second recovery candidate is compared with that trusted reference. Video and audio remain live during this process.
 
-## Governor enters HOLDING
+## Sync Core reports a timestamp incident
 
-The live status and flight recorder identify the reason:
+The diagnostics identify likely causes:
 
-- `video stall`: video stopped arriving beyond the configured threshold;
 - `audio/video timestamp jump`: a large forward or backward source-time discontinuity;
 - `timestamp repeated/backward`: a non-monotonic frame or block;
-- `A/V deviation exceeded`: movement beyond the hard limit from the learned baseline;
-- `shared playout depth left safe range`: the mapped OBS output timeline became implausibly far ahead of or behind local arrival time.
 
-Copy **Diagnostics** and **A/V flight recorder** before changing settings. Fault samples are excluded from baseline and drift learning.
+Copy **Diagnostics** before changing settings. Fault samples are excluded from baseline and drift learning.
 
 ## Audio/video briefly cuts during a fault
 
-The governor now fails open during warm-up, holding, verification, and failure, so its own timing decisions should not blank or mute the feed. If a cut remains, capture diagnostics: it is more likely in the sender, NDI transport, receiver, or OBS source lifecycle than an intentional governor gate.
+Sync Core never gates video. During learning or failure its correction moves to neutral, so a cut is more likely in the sender, NDI transport, receiver, or OBS source lifecycle.
 
-## Governor says NEEDS ATTENTION
+## Sync Core says NEEDS ATTENTION
 
-The recovered timing did not match the trusted reference, or more than three recoveries occurred within five minutes. Correction is bypassed and normal DistroAV output remains live. The dock attempts one in-place receiver reconnect; if the warning remains, follow its suggested action and export diagnostics before a manual reconnect or sender restart.
+The recovered timing did not match the trusted reference. Correction is bypassed and normal DistroAV output remains live. The dock attempts one in-place receiver reconnect; if the warning remains, export diagnostics before a manual reconnect or sender restart.
 
-## Video correction remains at the configured maximum
+## Linked audio correction remains at the configured maximum
 
-The measured source clocks are continuing to diverge beyond the correction range. Do not simply raise the value indefinitely. Copy the flight recorder and inspect audio devices, sender timing, network interruptions, and source restarts. The governor reports the limit instead of chasing the drift indefinitely.
-
-## Fixed delay feels too high
-
-The default 120 ms is deliberately conservative. Reduce **Shared playout delay** gradually while testing. A lower value reduces latency but leaves less room for arrival jitter. The current minimum is 40 ms. Lower it gradually while watching playout-depth and recovery counters; very small values leave less room for arrival jitter.
+The measured audio clock is diverging beyond the correction range. Do not simply raise the value indefinitely. Export diagnostics and inspect audio devices, sender timing, network interruptions, and source restarts. The core reports the limit instead of chasing drift indefinitely.
 
 ## Source settings are not recommended
 
@@ -105,7 +98,7 @@ Audio: Enabled
 Source behavior: Keep Active
 ```
 
-The governor bypasses enforcement when these conditions are not met rather than risking false blocks.
+Automatic configuration applies these conditions before downstream learning begins.
 
 ## Old missing-plugin warning
 

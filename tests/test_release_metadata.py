@@ -7,7 +7,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-if version != "0.5.1-alpha1":
+if version != "0.6.0-alpha1":
     raise SystemExit(f"Unexpected VERSION: {version}")
 
 checks = {
@@ -25,8 +25,8 @@ for relative, marker in checks.items():
         raise SystemExit(f"Version marker missing from {relative}: {marker}")
 
 installer = (ROOT / "installer/MultichannelBridge.iss").read_text(encoding="utf-8")
-if '#define AppNumericVersion "0.5.1.0"' not in installer:
-    raise SystemExit("Installer numeric version is not 0.5.1.0")
+if '#define AppNumericVersion "0.6.0.0"' not in installer:
+    raise SystemExit("Installer numeric version is not 0.6.0.0")
 for optional_doc in ("INSTALL-BOTH-PCS.md", "RELEASE-NOTES.md", "AV-GOVERNOR.md", "UPSTREAM-NOTES.md", "ROADMAP.md"):
     matching_lines = [line for line in installer.splitlines() if optional_doc in line and line.startswith("Source:")]
     if len(matching_lines) != 1 or "skipifsourcedoesntexist" not in matching_lines[0]:
@@ -43,11 +43,14 @@ required = (
     "hotfix/bridge/sender-sync-core.h",
     "hotfix/bridge/av-governor.cpp",
     "hotfix/bridge/av-governor.h",
+    "hotfix/bridge/downstream-sync-core.cpp",
+    "hotfix/bridge/downstream-sync-core.h",
     "hotfix/bridge/multichannel-bridge.cpp",
     "hotfix/bridge/multichannel-bridge.h",
     "hotfix/scripts/patch_distroav.py",
     "tests/sender-sync-core-tests.cpp",
     "tests/av-governor-tests.cpp",
+    "tests/downstream-sync-core-tests.cpp",
     "tests/test_parameter_paths.py",
     "tests/test_callback_safety.py",
     "tests/test_installer_contract.py",

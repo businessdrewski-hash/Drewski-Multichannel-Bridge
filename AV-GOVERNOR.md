@@ -1,83 +1,78 @@
-# A/V Governor 1.3
+# Downstream Sync Core 2.0
 
-A/V Governor is an optional receiver-side timing subsystem inside the same custom DistroAV build as Multichannel Bridge.
+The legacy filename is retained for existing links. Version 0.6 replaces the old receiver-side video governor with a video-master, linked-audio correction system.
 
-## Goal
+## What it measures
 
-Prevent a healthy audio/video relationship from separating before DistroAV submits media to OBS. It distinguishes ordinary jitter, slow clock movement, and real discontinuities instead of treating every timing change as the same problem.
+The earlier implementation observed audio and video before their OBS source paths. That could report a stable relationship even while the final mixer output accumulated long-run drift.
 
-## How it works
+Sync Core 2.0 observes:
 
-The receiver hook sees both the raw NDI `timestamp`/`timecode` values and the OBS timestamps produced by DistroAV. Before `obs_source_output_audio` or `obs_source_output_video` is called, the governor:
+1. the canonical DistroAV video timestamp through a private asynchronous-video filter;
+2. the split audio timestamp at the input of a private audio filter, after the receiver handoff;
+3. the linked correction actually applied to both split outputs.
 
-1. projects the latest audio and video clocks to one common local instant;
-2. median-filters short jitter and establishes a trusted fixed A/V reference only after at least five stable seconds;
-3. maps both streams onto the same future OBS playout timeline, using OBS's native asynchronous source queues rather than copying 4K video frames into another custom buffer;
-4. estimates persistent drift only after enough time and samples produce a high-confidence trend;
-5. keeps audio sample-perfect and makes bounded, frame-boundary video timestamp corrections only for confirmed gradual drift;
-6. detects stalls, backward/repeated timestamps, large jumps, unsafe playout depth, and excessive movement away from baseline;
-7. preserves the trusted reference, quarantines post-fault samples for two seconds, and verifies a stable recovery candidate against that reference;
-8. makes one in-place receiver reconnect attempt and then enters fail-safe bypass if the candidate is unsafe or recovery repeatedly fails;
-9. exports protected critical events and rate-limited telemetry containing raw NDI timing, OBS timing, skew, drift, playout depth, corrections, and recovery events.
+The observations are projected to one monotonic wall-clock instant and median-filtered. A five-second stable window establishes the trusted reference. Later 30-to-120-second trend windows estimate native audio clock error, but they do not replace that reference. This means a fifth or eighth analysis window still reports cumulative movement from the first trusted lock.
 
-The core records which packets it would gate during a video stall or re-lock, but the OBS adapter fails open with the original DistroAV timestamps. This keeps the feed visible and audible while protection reacquires. Audio is not resampled, stretched, or PPM-adjusted.
+## What it changes
+
+Video is the master clock and every received video timestamp passes through unchanged.
+
+When downstream evidence reaches at least 75% confidence, the core applies one shared PPM command to both stereo audio filters. Positive video-minus-audio movement means audio is falling behind; the filters emit slightly fewer frames to move both audio buses forward together. A small catch-up component removes an existing offset, then the steady command converges on the measured native clock error.
+
+Both filters use the same command and identical fractional-frame accounting, so desktop/game and microphone cannot drift relative to each other.
 
 ## Recommended defaults
 
 ```text
 Enabled:                         yes
 Automatic source configuration:  yes
-Shared playout delay:             120 ms
-Hard A/V deviation limit:         120 ms
-Video-stall hold threshold:       120 ms
+Maximum linked audio correction: 1000 ppm
+Correction slew:                  100 ppm/sec
+Correction dead zone:               4 ms
 Baseline learning window:        5000 ms
 Drift analysis window:         120000 ms
 Minimum drift observation:      30000 ms
-Drift deadband:                     8 ppm
-Gradual video correction:         yes
-Maximum video correction:          40 ms
-Video correction slew:           1000 ppm
-Minimum recovery observations:     12
 NDI Frame Sync:                    off
 DistroAV sync mode:                Source Timecode
 NDI source behavior:               Keep Active
 ```
 
+The 1000 ppm ceiling is primarily available to remove an existing offset. A steady 200 ms drift over 2.5 hours is about 22 ppm, so normal long-run correction should be far smaller.
+
 ## States
 
-- `BYPASSED`: disabled or the source is not configured for Frame Sync off, Source Timecode, and audio enabled.
-- `WARMING UP`: collecting initial timing observations.
-- `VERIFYING`: quarantining recovery samples and comparing a stable candidate with the trusted reference.
-- `FAILED`: correction is bypassed because safe recovery could not be verified; normal DistroAV output remains live.
-- `LOCKED`: both paths are accepted on the shared playout timeline.
-- `HOLDING`: a discontinuity or unsafe timing state was detected; internal protected-timeline decisions pause while the adapter leaves normal DistroAV output live.
+- `BYPASSED`: automatic correction is disabled.
+- `LEARNING`: collecting the initial stable reference.
+- `LOCKED`: the trusted reference is valid; trend measurement and correction are active.
+- `VERIFYING`: a timestamp incident occurred; new samples are quarantined, then compared with the retained reference.
+- `NEEDS ATTENTION`: recovered timing differs materially from the trusted reference; automatic correction is held at neutral pending reconnect.
+
+## Recovery
+
+Backward timestamps, repeated clock movement, or a greater-than-50 ms timestamp-versus-wall discontinuity start a two-second quarantine. The first baseline is retained. The linked output timeline and its cumulative frame adjustment are preserved while the raw input clock is re-anchored, preventing a reconnect from snapping corrected audio back to an hours-late raw clock.
+
+After quarantine, five stable seconds must agree with the trusted reference within 40 ms. If not, the plugin leaves output live, stops correction, and requests attention rather than accepting the fault as a new normal.
+
+## Real-time safety
+
+- fixed-size interpolation buffers allocated when each private filter is created;
+- no allocation, logging, file access, UI work, or mutex wait in the audio callback;
+- bounded linear interpolation only when the fractional command crosses a frame boundary;
+- raw samples are returned unchanged while correction is disabled or a block exceeds the fixed safety capacity;
+- the controller and trend regression run on a 250 ms Qt timer, even while the dock is hidden.
 
 ## Diagnostics
 
-The dock reports raw and filtered skew, learned baseline, baseline sample count, drift rate and confidence, audio/video playout depth, estimated video interval, correction amount, fades, blocked packets, raw NDI timing fields, epochs, and recoveries.
-
-**Export diagnostics** creates a timestamped folder with:
+The compact dock reports the OBS-facing relation, corrected change, trusted reference, native drift, linked correction, packet age, and adjusted frames. **Export diagnostics** creates:
 
 - `bridge-status.txt`
-- `av-governor-flight-recorder.csv`
-- a short explanation file
-
-The recorder uses separate fixed-size rings. Holds, drops, locks, fades, resets, and failures use protected critical capacity. Routine samples and correction telemetry are rate-limited and cannot overwrite those critical events.
-
-## Performance
-
-- no second NDI video sender;
-- no copied or retained video payloads;
-- no audio resampling;
-- fixed-size timing windows and recorder rings;
-- no per-packet logging;
-- one short mutex around constant-bounded timing work;
-- fade scratch buffers are fixed-size and never resized in a callback.
+- `downstream-sync.csv`
+- `README.txt`
 
 ## Limitations
 
-- The playout window relies on OBS asynchronous-source scheduling; it is not hardware genlock.
-- Timestamps cannot prove that the visible and audible content itself is correct.
-- Media lost before the receiver cannot be reconstructed.
-- A severe sender, capture, network, or decoder failure may still cause a brief coordinated freeze or gap.
-- This alpha still requires long-duration and fault-injection testing on Windows.
+- This is clock correction, not hardware genlock.
+- Timestamps cannot prove that the content inside a decoded frame is semantically correct.
+- Lost or corrupted media cannot be reconstructed.
+- The alpha still requires long-duration testing in real Windows/OBS/DistroAV installations.
