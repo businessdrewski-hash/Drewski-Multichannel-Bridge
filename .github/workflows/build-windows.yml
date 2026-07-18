@@ -75,6 +75,15 @@ jobs:
           python tests/test_release_metadata.py
           python tests/test_installer_contract.py
           python tests/test_receiver_safety.py
+          python tests/test_governor_safety.py
+          python tests/test_compact_ui.py
+
+      - name: Test installer state on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tests\test-installer-state.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Installer-state test failed with exit code $LASTEXITCODE" }
 
       - name: Check out clean DistroAV 6.2.1
         uses: actions/checkout@v4
