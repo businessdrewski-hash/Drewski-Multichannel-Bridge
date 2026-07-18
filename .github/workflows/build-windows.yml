@@ -83,7 +83,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & .\tests\test-installer-state.ps1
-          if ($LASTEXITCODE -ne 0) { throw "Installer-state test failed with exit code $LASTEXITCODE" }
+          if (-not $?) { throw 'Installer-state PowerShell script reported failure.' }
 
       - name: Check out clean DistroAV 6.2.1
         uses: actions/checkout@v4
