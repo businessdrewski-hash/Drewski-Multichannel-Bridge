@@ -2,13 +2,19 @@ name: Build Multichannel Bridge for DistroAV (Windows)
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish the verified EXE and support files as a GitHub prerelease"
+        required: true
+        type: boolean
+        default: true
   push:
     branches: [main, master]
     paths-ignore:
       - "**/*.md"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -67,6 +73,8 @@ jobs:
           python tests/test_parameter_paths.py
           python tests/test_callback_safety.py
           python tests/test_release_metadata.py
+          python tests/test_installer_contract.py
+          python tests/test_receiver_safety.py
 
       - name: Check out clean DistroAV 6.2.1
         uses: actions/checkout@v4
@@ -233,16 +241,72 @@ jobs:
           if (-not ($files.Name -match '\.exe$')) { throw 'Release is missing the setup EXE.' }
           if (-not ($files.Name -match 'Portable-Windows-x64\.zip$')) { throw 'Release is missing the portable ZIP.' }
 
+          $setups = @(Get-ChildItem $dist -File -Filter 'Multichannel-Bridge-for-DistroAV-Setup-*.exe')
+          if ($setups.Count -ne 1) { throw "Expected one named setup EXE, found $($setups.Count)." }
+          $setup = $setups[0]
+          $header = [IO.File]::ReadAllBytes($setup.FullName)[0..1]
+          if ($header[0] -ne 0x4d -or $header[1] -ne 0x5a) {
+            throw "Installer does not have a Windows PE MZ header: $($setup.FullName)"
+          }
+
           $lines = foreach ($file in $files) {
             $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($file.Name)"
           }
           $lines | Set-Content -Encoding ascii (Join-Path $dist 'SHA256SUMS.txt')
+          $installerHash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$installerHash  $($setup.Name)" | Set-Content -Encoding ascii (Join-Path $dist 'INSTALLER-SHA256.txt')
           Get-ChildItem $dist | Format-Table Name,Length,LastWriteTime
 
-      - name: Upload Windows release package
+      - name: Upload required Windows installer EXE
         uses: actions/upload-artifact@v4
         with:
-          name: Multichannel-Bridge-for-DistroAV-v${{ steps.version.outputs.version }}-Windows-x64
-          path: dist/*
+          name: Multichannel-Bridge-for-DistroAV-v${{ steps.version.outputs.version }}-INSTALLER-EXE
+          path: |
+            dist/Multichannel-Bridge-for-DistroAV-Setup-v${{ steps.version.outputs.version }}.exe
+            dist/INSTALLER-SHA256.txt
+          if-no-files-found: error
           retention-days: 30
+
+      - name: Upload portable and source support files
+        uses: actions/upload-artifact@v4
+        with:
+          name: Multichannel-Bridge-for-DistroAV-v${{ steps.version.outputs.version }}-SUPPORT-FILES
+          path: |
+            dist/Multichannel-Bridge-for-DistroAV-v${{ steps.version.outputs.version }}-Portable-Windows-x64.zip
+            dist/Multichannel-Bridge-DistroAV-6.2.1.patch
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish verified EXE as GitHub prerelease
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ steps.version.outputs.version }}'
+          $tag = "v$version"
+          $title = "Multichannel Bridge v$version"
+          $notes = @"
+          Windows x64 prerelease of Multichannel Bridge for DistroAV.
+
+          Download the setup EXE for normal installation. Close OBS before running it.
+          The portable ZIP is a troubleshooting fallback. Verify INSTALLER-SHA256.txt before use.
+          "@
+
+          $assets = @(
+            "dist/Multichannel-Bridge-for-DistroAV-Setup-v$version.exe",
+            'dist/INSTALLER-SHA256.txt',
+            "dist/Multichannel-Bridge-for-DistroAV-v$version-Portable-Windows-x64.zip",
+            'dist/Multichannel-Bridge-DistroAV-6.2.1.patch',
+            'dist/SHA256SUMS.txt'
+          )
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $tag @assets --prerelease --title $title --notes $notes --repo $env:GITHUB_REPOSITORY
+          }
+          if ($LASTEXITCODE -ne 0) { throw "GitHub prerelease publication failed with exit code $LASTEXITCODE" }
