@@ -62,7 +62,7 @@ constexpr const char *kAudioClockFilterId = "ndi_multichannel_bridge_linked_audi
 constexpr const char *kVideoProbeFilterName = "[MCB] Downstream Video Clock";
 constexpr const char *kAudioClockFilterName = "[MCB] Linked Audio Clock";
 constexpr const char *kAudioClockPairKey = "mcb_audio_clock_pair";
-constexpr const char *kVersion = "0.6.0-alpha1";
+constexpr const char *kVersion = "0.6.0-alpha2";
 constexpr const char *kGovernorVersion = "2.0";
 constexpr const char *kSenderCoreVersion = "2.0";
 constexpr const char *kDefaultProgramName = "MCB Desktop / Game";
@@ -124,13 +124,9 @@ void ensure_defaults()
 	config_set_default_bool(config, kSection, "SuppressOriginal", true);
 	config_set_default_bool(config, kSection, "GovernorEnabled", true);
 	config_set_default_bool(config, kSection, "GovernorAutoConfigure", true);
-	config_set_default_int(config, kSection, "GovernorMaxSkewMs", 120);
-	config_set_default_int(config, kSection, "GovernorVideoStallMs", 120);
-	config_set_default_int(config, kSection, "GovernorPlayoutDelayMs", 120);
 	config_set_default_bool(config, kSection, "GovernorDriftCorrection", true);
 	config_set_default_int(config, kSection, "GovernorCorrectionSlewPpm", 100);
 	config_set_default_int(config, kSection, "GovernorMaxAudioCorrectionPpm", 1000);
-	config_set_default_int(config, kSection, "GovernorRelockPairs", 12);
 	config_set_default_int(config, kSection, "GovernorBaselineWindowMs", 5000);
 	config_set_default_int(config, kSection, "GovernorDriftWindowMs", 120000);
 	config_set_default_int(config, kSection, "GovernorDriftMinimumMs", 30000);
@@ -1139,20 +1135,6 @@ public:
 		auto *governor_form = new QFormLayout(governor_box_);
 		auto_configure_ = new QCheckBox(
 			"Automatically disable NDI Frame Sync and use Source Timecode (recommended)", governor_box_);
-		playout_delay_ms_ = new QSpinBox(governor_box_);
-		playout_delay_ms_->setRange(40, 500);
-		playout_delay_ms_->setSuffix(" ms");
-		playout_delay_ms_->setToolTip("Legacy setting retained for configuration compatibility; video is no longer delayed.");
-		max_skew_ms_ = new QSpinBox(governor_box_);
-		max_skew_ms_->setRange(40, 500);
-		max_skew_ms_->setSuffix(" ms");
-		max_skew_ms_->setToolTip(
-			"Hard safety limit. If A/V movement exceeds this, correction pauses and the model re-locks while normal output continues.");
-		video_stall_ms_ = new QSpinBox(governor_box_);
-		video_stall_ms_->setRange(60, 1000);
-		video_stall_ms_->setSuffix(" ms");
-		video_stall_ms_->setToolTip(
-			"If video stops arriving for this long, audio is held before it can run ahead.");
 		drift_correction_ = new QCheckBox(
 			"Keep both audio tracks aligned to video automatically (recommended)", governor_box_);
 		max_audio_correction_ppm_ = new QSpinBox(governor_box_);
@@ -1165,11 +1147,6 @@ public:
 		correction_slew_ppm_->setSuffix(" ppm/sec");
 		correction_slew_ppm_->setToolTip(
 			"How quickly the linked desktop and microphone correction can change. Braking toward neutral is allowed at twice this rate.");
-		relock_pairs_ = new QSpinBox(governor_box_);
-		relock_pairs_->setRange(3, 60);
-		relock_pairs_->setSuffix(" pairs");
-		relock_pairs_->setToolTip(
-			"Minimum number of sane audio/video observations required during the baseline-learning window.");
 		baseline_window_ms_ = new QSpinBox(governor_box_);
 		baseline_window_ms_->setRange(5000, 30000);
 		baseline_window_ms_->setSuffix(" ms");
@@ -1307,13 +1284,9 @@ public:
 		connect(recommended_governor_, &QPushButton::clicked, this, [this] {
 			governor_box_->setChecked(true);
 			auto_configure_->setChecked(true);
-			playout_delay_ms_->setValue(120);
-			max_skew_ms_->setValue(120);
-			video_stall_ms_->setValue(120);
 			drift_correction_->setChecked(true);
 			max_audio_correction_ppm_->setValue(1000);
 			correction_slew_ppm_->setValue(100);
-			relock_pairs_->setValue(12);
 			baseline_window_ms_->setValue(5000);
 			drift_window_ms_->setValue(120000);
 			drift_minimum_ms_->setValue(30000);
@@ -1617,19 +1590,12 @@ private:
 		suppress_original_->setChecked(config ? config_get_bool(config, kSection, "SuppressOriginal") : true);
 		governor_box_->setChecked(config ? config_get_bool(config, kSection, "GovernorEnabled") : true);
 		auto_configure_->setChecked(config ? config_get_bool(config, kSection, "GovernorAutoConfigure") : true);
-		max_skew_ms_->setValue(config ? static_cast<int>(config_get_int(config, kSection, "GovernorMaxSkewMs")) : 120);
-		video_stall_ms_->setValue(
-			config ? static_cast<int>(config_get_int(config, kSection, "GovernorVideoStallMs")) : 120);
-		playout_delay_ms_->setValue(
-			config ? static_cast<int>(config_get_int(config, kSection, "GovernorPlayoutDelayMs")) : 120);
 		drift_correction_->setChecked(
 			config ? config_get_bool(config, kSection, "GovernorDriftCorrection") : true);
 		max_audio_correction_ppm_->setValue(
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorMaxAudioCorrectionPpm")) : 1000);
 		correction_slew_ppm_->setValue(
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorCorrectionSlewPpm")) : 100);
-		relock_pairs_->setValue(
-			config ? static_cast<int>(config_get_int(config, kSection, "GovernorRelockPairs")) : 12);
 		baseline_window_ms_->setValue(
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorBaselineWindowMs")) : 5000);
 		drift_window_ms_->setValue(
@@ -1689,13 +1655,9 @@ private:
 		config_set_bool(config, kSection, "SuppressOriginal", suppress_original_->isChecked());
 		config_set_bool(config, kSection, "GovernorEnabled", governor_box_->isChecked());
 		config_set_bool(config, kSection, "GovernorAutoConfigure", auto_configure_->isChecked());
-		config_set_int(config, kSection, "GovernorMaxSkewMs", max_skew_ms_->value());
-		config_set_int(config, kSection, "GovernorVideoStallMs", video_stall_ms_->value());
-		config_set_int(config, kSection, "GovernorPlayoutDelayMs", playout_delay_ms_->value());
 		config_set_bool(config, kSection, "GovernorDriftCorrection", drift_correction_->isChecked());
 		config_set_int(config, kSection, "GovernorMaxAudioCorrectionPpm", max_audio_correction_ppm_->value());
 		config_set_int(config, kSection, "GovernorCorrectionSlewPpm", correction_slew_ppm_->value());
-		config_set_int(config, kSection, "GovernorRelockPairs", relock_pairs_->value());
 		config_set_int(config, kSection, "GovernorBaselineWindowMs", baseline_window_ms_->value());
 		config_set_int(config, kSection, "GovernorDriftWindowMs", drift_window_ms_->value());
 		config_set_int(config, kSection, "GovernorDriftMinimumMs", drift_minimum_ms_->value());
@@ -2017,13 +1979,9 @@ private:
 	QCheckBox *auto_configure_ = nullptr;
 	QCheckBox *advanced_governor_ = nullptr;
 	QWidget *advanced_governor_panel_ = nullptr;
-	QSpinBox *playout_delay_ms_ = nullptr;
-	QSpinBox *max_skew_ms_ = nullptr;
-	QSpinBox *video_stall_ms_ = nullptr;
 	QCheckBox *drift_correction_ = nullptr;
 	QSpinBox *max_audio_correction_ppm_ = nullptr;
 	QSpinBox *correction_slew_ppm_ = nullptr;
-	QSpinBox *relock_pairs_ = nullptr;
 	QSpinBox *baseline_window_ms_ = nullptr;
 	QSpinBox *drift_window_ms_ = nullptr;
 	QSpinBox *drift_minimum_ms_ = nullptr;

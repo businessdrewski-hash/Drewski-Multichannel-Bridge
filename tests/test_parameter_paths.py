@@ -26,9 +26,8 @@ if missing_reads:
 
 expected = {
     "Role", "TrackA", "TrackB", "ReceiverSource", "ProgramProxyName", "MicProxyName",
-    "SuppressOriginal", "GovernorEnabled", "GovernorAutoConfigure", "GovernorMaxSkewMs",
-    "GovernorVideoStallMs", "GovernorPlayoutDelayMs", "GovernorDriftCorrection",
-    "GovernorMaxAudioCorrectionPpm", "GovernorCorrectionSlewPpm", "GovernorRelockPairs",
+    "SuppressOriginal", "GovernorEnabled", "GovernorAutoConfigure", "GovernorDriftCorrection",
+    "GovernorMaxAudioCorrectionPpm", "GovernorCorrectionSlewPpm",
     "GovernorBaselineWindowMs", "GovernorDriftWindowMs", "GovernorDriftMinimumMs",
     "GovernorCorrectionDeadZoneMs",
 }

@@ -1,4 +1,4 @@
-# Validation notes for v0.6.0-alpha1
+# Validation notes for v0.6.0-alpha2
 
 Completed in the source-generation environment:
 
@@ -8,7 +8,7 @@ Completed in the source-generation environment:
 - Sender tests for canonical mix timestamps, 10,000-cycle bounded pairing, backward timestamp recovery, manual re-anchor, missing-track silence fallback, oversized input rejection, and the one-megabyte state-size ceiling
 - Downstream Sync Core 2.0 C++17 compilation and a deterministic 2.5-hour/200 ms late-audio simulation
 - Static sender and receiver audio-callback audits rejecting dynamic containers, allocation/growth calls, mutex waits, UI work, file work, and callback logging
-- Parameter-path audit covering defaults, reads/runtime paths, and writes for all 20 saved settings
+- Parameter-path audit covering defaults, reads/runtime paths, and writes for all 16 saved settings
 - Repository version and required-file checks
 - Windows PowerShell 5.1 execution test for empty and populated installer-state serialization
 

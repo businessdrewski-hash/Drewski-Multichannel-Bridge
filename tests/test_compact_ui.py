@@ -30,4 +30,13 @@ for marker in required:
     if marker not in bridge:
         raise SystemExit(f"Compact UI/lifecycle marker is missing: {marker}")
 
+for obsolete in (
+    "playout_delay_ms_",
+    "max_skew_ms_",
+    "video_stall_ms_",
+    "relock_pairs_",
+):
+    if obsolete in bridge:
+        raise SystemExit(f"Obsolete unlaid-out timing control can overlap the compact UI: {obsolete}")
+
 print("Compact monitoring, OBS icon, and canonical-receiver audit passed")

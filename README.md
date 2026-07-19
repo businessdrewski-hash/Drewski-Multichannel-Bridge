@@ -1,7 +1,7 @@
 # Multichannel Bridge for DistroAV
 
 > Experimental modified DistroAV build for two-PC OBS setups
-> Current version: **0.6.0-alpha1**
+> Current version: **0.6.0-alpha2**
 > Based on: **DistroAV 6.2.1**
 
 ## Personal project and support disclaimer
@@ -163,7 +163,7 @@ Compatibility outside that environment is not guaranteed.
 
 Install the same release on both computers.
 
-1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha1.exe`.
+1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha2.exe`.
 2. Close OBS completely.
 3. Run the installer as Administrator on both PCs.
 4. Select the root OBS folder, normally `C:\Program Files\obs-studio`.
@@ -287,6 +287,10 @@ More detail: [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
 ---
 
 ## Consolidated changelog
+
+### 0.6.0-alpha2
+
+- Removed obsolete unlaid-out legacy timing controls, fixing the `12 pairs` overlap in the receiver setup title.
 
 ### 0.6.0-alpha1
 

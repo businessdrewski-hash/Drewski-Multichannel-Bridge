@@ -1,4 +1,10 @@
-# v0.6.0-alpha1 release notes
+# v0.6.0-alpha2 release notes
+
+## Alpha 2 UI correction
+
+- Removes four obsolete legacy timing spin boxes that were still being constructed without layout positions.
+- Fixes the visible `12 pairs` control overlapping the automatic audio drift correction title.
+- Leaves the compact layout and the active downstream correction controls unchanged.
 
 ## Long-recording drift correction
 
@@ -99,7 +105,7 @@ The two selected OBS tracks are already rendered by the same OBS audio engine be
 
 - Receiver callback routing no longer waits on the receiver UI/lifecycle mutex; it safely leaves the original path active if the lock is temporarily busy.
 - Receiver resampling buffers are fixed-size and cannot allocate during an audio callback.
-- All 20 saved settings are checked for default, load/runtime, and save paths.
+- All 16 saved settings are checked for default, load/runtime, and save paths.
 - A callback-safety test rejects sender vectors, deques, mutexes, dynamic growth, UI work, file work, or callback logging.
 - Sender tests cover 10,000 normal pair cycles, canonical timestamps, discontinuities, manual re-anchor, missing-track fallback, oversized-block rejection, and the one-megabyte state budget.
 
@@ -117,8 +123,8 @@ OBS Track B -> NDI channels 3-4 -> Microphone
 The GitHub Action builds:
 
 ```text
-Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha1.exe
-Multichannel-Bridge-for-DistroAV-v0.6.0-alpha1-Portable-Windows-x64.zip
+Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha2.exe
+Multichannel-Bridge-for-DistroAV-v0.6.0-alpha2-Portable-Windows-x64.zip
 Multichannel-Bridge-DistroAV-6.2.1.patch
 SHA256SUMS.txt
 ```
