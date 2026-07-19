@@ -29,7 +29,7 @@ expected = {
     "SuppressOriginal", "GovernorEnabled", "GovernorAutoConfigure", "GovernorDriftCorrection",
     "GovernorMaxAudioCorrectionPpm", "GovernorCorrectionSlewPpm",
     "GovernorBaselineWindowMs", "GovernorDriftWindowMs", "GovernorDriftMinimumMs",
-    "GovernorCorrectionDeadZoneMs",
+    "GovernorCorrectionDeadZoneMs", "DeepTimingDiagnostics",
 }
 if defaults != expected:
     missing = sorted(expected - defaults)
@@ -43,6 +43,7 @@ required_runtime_paths = (
     "mcb_sender_track_a_zero_based()",
     "mcb_sender_track_b_zero_based()",
     "Track A and Track B must be different",
+    "ReceiverRouter::instance().set_deep_timing_enabled(",
 )
 for marker in required_runtime_paths:
     if marker not in SOURCE:

@@ -10,6 +10,7 @@ PATCHER = (ROOT / "hotfix/scripts/patch_distroav.py").read_text(encoding="utf-8"
 CORE_H = (ROOT / "hotfix/bridge/sender-sync-core.h").read_text(encoding="utf-8")
 CORE_CPP = (ROOT / "hotfix/bridge/sender-sync-core.cpp").read_text(encoding="utf-8")
 BRIDGE = (ROOT / "hotfix/bridge/multichannel-bridge.cpp").read_text(encoding="utf-8")
+DEEP = (ROOT / "hotfix/bridge/deep-timing-recorder.cpp").read_text(encoding="utf-8")
 
 match = re.search(r"raw_audio2 = r'''(.*?)'''", PATCHER, flags=re.DOTALL)
 if not match:
@@ -66,5 +67,20 @@ for marker in (
 ):
     if marker not in BRIDGE:
         raise SystemExit(f"Linked receiver callback safety marker is missing: {marker}")
+
+deep_publish = DEEP[DEEP.index("void DeepTimingRecorder::publish") : DEEP.index("DeepTimingStageSnapshot DeepTimingRecorder::read_stage")]
+deep_callbacks = DEEP[DEEP.index("void DeepTimingRecorder::observe_raw_audio") : DEEP.index("void DeepTimingRecorder::sample")]
+for label, section in (("publisher", deep_publish), ("callback entry points", deep_callbacks)):
+    violations = [token for token in forbidden_callback_tokens if token in section]
+    if violations:
+        raise SystemExit(f"Deep timing {label} contains forbidden operations: " + ", ".join(violations))
+for marker in (
+    "if (enabled())",
+    "stage.sequence.fetch_add",
+    "stage.observations.fetch_add",
+    "pacing_anomalies.fetch_add",
+):
+    if marker not in deep_publish and marker not in deep_callbacks:
+        raise SystemExit(f"Deep timing callback safety marker is missing: {marker}")
 
 print("Callback safety audit passed")

@@ -1,4 +1,5 @@
 #include "multichannel-bridge.h"
+#include "deep-timing-recorder.h"
 #include "downstream-sync-core.h"
 #include "sender-sync-core.h"
 
@@ -62,7 +63,7 @@ constexpr const char *kAudioClockFilterId = "ndi_multichannel_bridge_linked_audi
 constexpr const char *kVideoProbeFilterName = "[MCB] Downstream Video Clock";
 constexpr const char *kAudioClockFilterName = "[MCB] Linked Audio Clock";
 constexpr const char *kAudioClockPairKey = "mcb_audio_clock_pair";
-constexpr const char *kVersion = "0.6.0-alpha4";
+constexpr const char *kVersion = "0.6.0-alpha5";
 constexpr const char *kGovernorVersion = "2.0";
 constexpr const char *kSenderCoreVersion = "2.0";
 constexpr const char *kDefaultProgramName = "MCB Desktop / Game";
@@ -131,6 +132,7 @@ void ensure_defaults()
 	config_set_default_int(config, kSection, "GovernorDriftWindowMs", 120000);
 	config_set_default_int(config, kSection, "GovernorDriftMinimumMs", 30000);
 	config_set_default_int(config, kSection, "GovernorCorrectionDeadZoneMs", 4);
+	config_set_default_bool(config, kSection, "DeepTimingDiagnostics", false);
 }
 
 void save_config()
@@ -307,6 +309,7 @@ public:
 		reset_stats();
 		refresh_source_configuration();
 		attached_.store(true, std::memory_order_release);
+		deep_timing_.mark_event(mcb::DeepTimingEvent::ReceiverAttached, os_gettime_ns());
 		obs_log(LOG_INFO, "[multichannel-bridge] Receiver attached to raw DistroAV source '%s'", name.c_str());
 		return true;
 	}
@@ -328,6 +331,7 @@ public:
 			obs_source_release(old);
 		attached_.store(false, std::memory_order_release);
 		sync_core_.reset(false, false);
+		deep_timing_.mark_event(mcb::DeepTimingEvent::ReceiverDetached, os_gettime_ns());
 	}
 
 	void set_suppress_original(bool suppress)
@@ -365,6 +369,10 @@ public:
 		obs_data_set_bool(settings, "ndi_audio", true);
 		obs_data_set_int(settings, "ndi_behavior", 0); // Keep the canonical receiver active across scenes.
 		obs_source_update(source, settings);
+		ndi_frame_sync_.store(false, std::memory_order_relaxed);
+		ndi_sync_mode_.store(2, std::memory_order_relaxed);
+		ndi_audio_enabled_.store(true, std::memory_order_relaxed);
+		ndi_behavior_.store(0, std::memory_order_relaxed);
 		obs_data_release(settings);
 		obs_source_release(source);
 		obs_log(LOG_INFO, "[multichannel-bridge] Applied recommended source timing settings");
@@ -391,6 +399,9 @@ public:
 		obs_source_release(source);
 		if (accepted) {
 			sync_core_.reset(false, preserve_trusted_baseline);
+			deep_timing_.mark_event(preserve_trusted_baseline
+				? mcb::DeepTimingEvent::ReceiverReconnectVerify
+				: mcb::DeepTimingEvent::ReceiverReconnectFresh, os_gettime_ns());
 			obs_log(LOG_INFO,
 				"[multichannel-bridge] Requested an in-place DistroAV receiver reconnect (%s baseline)",
 				preserve_trusted_baseline ? "verify trusted" : "discard old");
@@ -407,12 +418,23 @@ public:
 				source = obs_source_get_ref(input_);
 		}
 		if (!source) {
+			ndi_frame_sync_.store(false, std::memory_order_relaxed);
+			ndi_sync_mode_.store(-1, std::memory_order_relaxed);
+			ndi_audio_enabled_.store(false, std::memory_order_relaxed);
+			ndi_behavior_.store(-1, std::memory_order_relaxed);
 			sync_core_.reset(false, true);
 			return false;
 		}
 		obs_data_t *settings = obs_source_get_settings(source);
-		const bool configured = settings && !obs_data_get_bool(settings, "ndi_framesync") &&
-					obs_data_get_int(settings, "ndi_sync") == 2 && obs_data_get_bool(settings, "ndi_audio");
+		const bool frame_sync = settings && obs_data_get_bool(settings, "ndi_framesync");
+		const int sync_mode = settings ? static_cast<int>(obs_data_get_int(settings, "ndi_sync")) : -1;
+		const bool audio_enabled = settings && obs_data_get_bool(settings, "ndi_audio");
+		const int behavior = settings ? static_cast<int>(obs_data_get_int(settings, "ndi_behavior")) : -1;
+		ndi_frame_sync_.store(frame_sync, std::memory_order_relaxed);
+		ndi_sync_mode_.store(sync_mode, std::memory_order_relaxed);
+		ndi_audio_enabled_.store(audio_enabled, std::memory_order_relaxed);
+		ndi_behavior_.store(behavior, std::memory_order_relaxed);
+		const bool configured = settings && !frame_sync && sync_mode == 2 && audio_enabled;
 		if (settings)
 			obs_data_release(settings);
 		obs_source_release(source);
@@ -430,8 +452,10 @@ public:
 		std::array<obs_source_t *, 2> outputs{};
 		{
 			std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-			if (!lock.owns_lock())
+			if (!lock.owns_lock()) {
+				deep_timing_.note_route_contention(false);
 				return false;
+			}
 			if (!input_ || input_ != origin)
 				return false;
 			for (size_t pair = 0; pair < outputs.size(); ++pair) {
@@ -445,9 +469,9 @@ public:
 		channels_.store(std::max(channel_count, 0), std::memory_order_relaxed);
 		packets_.fetch_add(1, std::memory_order_relaxed);
 		last_packet_ns_.store(now_ns, std::memory_order_relaxed);
-
-		(void)ndi_timestamp_100ns;
-		(void)ndi_timecode_100ns;
+		deep_timing_.observe_raw_audio(ndi_timestamp_100ns, ndi_timecode_100ns,
+			audio->timestamp, now_ns, audio->frames, audio->samples_per_sec,
+			static_cast<uint32_t>(std::max(channel_count, 0)));
 		// Keep the receiver handoff untouched. Private filters on both proxy
 		// sources observe the actual OBS-facing audio timeline and apply the same
 		// linked rate command after this point.
@@ -499,16 +523,20 @@ public:
 		bool split_active = false;
 		{
 			std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-			if (!lock.owns_lock())
+			if (!lock.owns_lock()) {
+				deep_timing_.note_route_contention(true);
 				return true;
+			}
 			selected = input_ && input_ == origin;
 			split_active = proxies_[0] && proxies_[1] && obs_source_active(proxies_[0]) &&
 				       obs_source_active(proxies_[1]);
 		}
-		if (!selected || !split_active)
+		if (!selected)
 			return true;
-		(void)ndi_timestamp_100ns;
-		(void)ndi_timecode_100ns;
+		deep_timing_.observe_raw_video(ndi_timestamp_100ns, ndi_timecode_100ns,
+			video->timestamp, os_gettime_ns(), video->width, video->height);
+		if (!split_active)
+			return true;
 		// Video is the master clock. It passes through unchanged; an OBS async
 		// video filter observes its downstream timestamp for the audio controller.
 		return true;
@@ -516,6 +544,15 @@ public:
 
 	mcb::DownstreamSyncSnapshot sync_snapshot() const { return sync_core_.snapshot(); }
 	std::string governor_flight_recorder_csv() const { return sync_core_.diagnostics_csv(); }
+	std::string deep_timing_csv() const { return deep_timing_.csv(); }
+	size_t deep_timing_samples() const { return deep_timing_.sample_count(); }
+	uint64_t deep_timing_overwritten() const { return deep_timing_.overwritten_samples(); }
+	bool deep_timing_enabled() const { return deep_timing_.enabled(); }
+	void set_deep_timing_enabled(bool enabled)
+	{
+		deep_timing_.set_enabled(enabled, os_gettime_ns());
+	}
+	mcb::DeepTimingRecorder &deep_timing() { return deep_timing_; }
 	mcb::DownstreamSyncCore &sync_core() { return sync_core_; }
 	double linked_audio_correction_ppm(int pair)
 	{
@@ -526,7 +563,41 @@ public:
 		}
 		return linked_audio_command_ppm_.load(std::memory_order_acquire);
 	}
-	void controller_tick(uint64_t now_ns) { sync_core_.tick(now_ns); }
+	void controller_tick(uint64_t now_ns)
+	{
+		sync_core_.tick(now_ns);
+		if (!deep_timing_.enabled())
+			return;
+		if (!last_deep_config_refresh_ns_ || now_ns - last_deep_config_refresh_ns_ >= 1000000000ULL) {
+			refresh_diagnostic_source_configuration();
+			last_deep_config_refresh_ns_ = now_ns;
+		}
+		const auto sync = sync_core_.snapshot();
+		mcb::DeepTimingControlSnapshot control;
+		control.governor_enabled = sync.enabled;
+		control.baseline_valid = sync.baseline_valid;
+		control.measurement_fresh = sync.measurement_fresh;
+		control.phase = static_cast<uint8_t>(sync.phase);
+		control.relation_ns = sync.relation_ns;
+		control.baseline_ns = sync.baseline_ns;
+		control.raw_deviation_ns = sync.raw_deviation_ns;
+		control.corrected_deviation_ns = sync.corrected_deviation_ns;
+		control.drift_ppm = sync.drift_ppm;
+		control.native_audio_error_ppm = sync.native_audio_error_ppm;
+		control.correction_ppm = sync.correction_ppm;
+		control.target_ppm = sync.target_ppm;
+		control.confidence = sync.confidence;
+		control.drift_samples = sync.drift_samples;
+		control.discontinuities = sync.discontinuities;
+		control.quarantined_samples = sync.quarantined_samples;
+		control.corrected_blocks = sync.corrected_blocks;
+		control.net_frame_adjustment = sync.net_frame_adjustment;
+		control.ndi_frame_sync = ndi_frame_sync_.load(std::memory_order_relaxed);
+		control.ndi_sync_mode = ndi_sync_mode_.load(std::memory_order_relaxed);
+		control.ndi_audio_enabled = ndi_audio_enabled_.load(std::memory_order_relaxed);
+		control.ndi_behavior = ndi_behavior_.load(std::memory_order_relaxed);
+		deep_timing_.sample(now_ns, control, audio_cursors());
+	}
 
 	void reset_governor(bool reset_counters) { sync_core_.reset(reset_counters, false); }
 
@@ -581,9 +652,57 @@ public:
 		peaks_[1].store(0.0f, std::memory_order_relaxed);
 		last_packet_ns_.store(0, std::memory_order_relaxed);
 		reset_governor(true);
+		deep_timing_.mark_event(mcb::DeepTimingEvent::CountersReset, os_gettime_ns());
 	}
 
 private:
+	void refresh_diagnostic_source_configuration()
+	{
+		obs_source_t *source = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			if (input_)
+				source = obs_source_get_ref(input_);
+		}
+		if (!source)
+			return;
+		obs_data_t *settings = obs_source_get_settings(source);
+		if (settings) {
+			ndi_frame_sync_.store(obs_data_get_bool(settings, "ndi_framesync"), std::memory_order_relaxed);
+			ndi_sync_mode_.store(static_cast<int>(obs_data_get_int(settings, "ndi_sync")), std::memory_order_relaxed);
+			ndi_audio_enabled_.store(obs_data_get_bool(settings, "ndi_audio"), std::memory_order_relaxed);
+			ndi_behavior_.store(static_cast<int>(obs_data_get_int(settings, "ndi_behavior")), std::memory_order_relaxed);
+			obs_data_release(settings);
+		}
+		obs_source_release(source);
+	}
+
+	mcb::DeepTimingAudioCursors audio_cursors() const
+	{
+		std::array<obs_source_t *, 3> sources{};
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			if (input_)
+				sources[0] = obs_source_get_ref(input_);
+			if (proxies_[0])
+				sources[1] = obs_source_get_ref(proxies_[0]);
+			if (proxies_[1])
+				sources[2] = obs_source_get_ref(proxies_[1]);
+		}
+		mcb::DeepTimingAudioCursors cursors;
+		if (sources[0])
+			cursors.canonical_source_ns = obs_source_get_audio_timestamp(sources[0]);
+		if (sources[1])
+			cursors.program_proxy_ns = obs_source_get_audio_timestamp(sources[1]);
+		if (sources[2])
+			cursors.mic_proxy_ns = obs_source_get_audio_timestamp(sources[2]);
+		for (obs_source_t *source : sources) {
+			if (source)
+				obs_source_release(source);
+		}
+		return cursors;
+	}
+
 	static float calculate_peak(const uint8_t *left, const uint8_t *right, uint32_t frames)
 	{
 		if ((!left && !right) || frames == 0)
@@ -618,7 +737,13 @@ private:
 	std::array<std::atomic<float>, 2> peaks_{};
 	std::atomic_uint64_t last_packet_ns_{0};
 	std::atomic<double> linked_audio_command_ppm_{0.0};
+	std::atomic_bool ndi_frame_sync_{false};
+	std::atomic_int ndi_sync_mode_{-1};
+	std::atomic_bool ndi_audio_enabled_{false};
+	std::atomic_int ndi_behavior_{-1};
+	uint64_t last_deep_config_refresh_ns_ = 0;
 	mcb::DownstreamSyncCore sync_core_;
+	mcb::DeepTimingRecorder deep_timing_;
 };
 
 struct LinkedAudioClockFilter {
@@ -675,8 +800,12 @@ void video_probe_destroy(void *) {}
 
 obs_source_frame *video_probe_filter(void *, obs_source_frame *frame)
 {
-	if (frame && frame->timestamp)
-		ReceiverRouter::instance().sync_core().observe_video(frame->timestamp, os_gettime_ns());
+	if (frame && frame->timestamp) {
+		const uint64_t wall_ns = os_gettime_ns();
+		ReceiverRouter::instance().deep_timing().observe_selected_video(
+			frame->timestamp, wall_ns);
+		ReceiverRouter::instance().sync_core().observe_video(frame->timestamp, wall_ns);
+	}
 	return frame;
 }
 
@@ -702,6 +831,8 @@ obs_audio_data *linked_audio_clock_filter(void *data, obs_audio_data *audio)
 		return audio;
 	auto &core = ReceiverRouter::instance().sync_core();
 	const uint64_t wall_ns = os_gettime_ns();
+	ReceiverRouter::instance().deep_timing().observe_audio_input(filter->pair,
+		audio->timestamp, wall_ns, audio->frames, filter->sample_rate);
 	if (filter->pair == 0)
 		core.observe_audio_input(audio->timestamp, wall_ns);
 
@@ -712,6 +843,10 @@ obs_audio_data *linked_audio_clock_filter(void *data, obs_audio_data *audio)
 	}
 	if (!core.enabled()) {
 		reset_linked_audio_timeline(filter, audio, false);
+		ReceiverRouter::instance().deep_timing().observe_audio_output(filter->pair,
+			audio->timestamp, wall_ns, audio->frames, audio->frames, filter->sample_rate,
+			filter->expected_input_timestamp_ns, filter->next_output_timestamp_ns,
+			filter->net_frame_adjustment, 0.0);
 		return audio;
 	}
 
@@ -733,6 +868,10 @@ obs_audio_data *linked_audio_clock_filter(void *data, obs_audio_data *audio)
 	if (audio->frames > LinkedAudioClockFilter::kMaxInputFrames ||
 		output_frames > LinkedAudioClockFilter::kMaxOutputFrames) {
 		reset_linked_audio_timeline(filter, audio);
+		ReceiverRouter::instance().deep_timing().observe_audio_output(filter->pair,
+			audio->timestamp, wall_ns, audio->frames, audio->frames, filter->sample_rate,
+			filter->expected_input_timestamp_ns, filter->next_output_timestamp_ns,
+			filter->net_frame_adjustment, 0.0);
 		return audio;
 	}
 	filter->frame_remainder = desired_frames - static_cast<double>(output_frames);
@@ -782,6 +921,10 @@ obs_audio_data *linked_audio_clock_filter(void *data, obs_audio_data *audio)
 	if (filter->pair == 0)
 		core.report_audio_output(filter->output.timestamp, wall_ns,
 			filter->net_frame_adjustment, filter->sample_rate);
+	ReceiverRouter::instance().deep_timing().observe_audio_output(filter->pair,
+		filter->output.timestamp, wall_ns, audio->frames, output_frames, filter->sample_rate,
+		filter->expected_input_timestamp_ns, filter->next_output_timestamp_ns,
+		filter->net_frame_adjustment, ppm);
 	return &filter->output;
 }
 
@@ -1266,6 +1409,11 @@ public:
 		governor_form->addRow(recommended_governor_);
 		governor_form->addRow("Protection:", governor_status_);
 		receiver_form->addRow(governor_box_);
+		deep_timing_diagnostics_ = new QCheckBox(
+			"Deep timing diagnostics (for desync investigation)", receiver_box_);
+		deep_timing_diagnostics_->setToolTip(
+			"Records a bounded three-hour, 250 ms CSV comparing raw NDI metadata, DistroAV handoff timestamps, OBS-selected video, linked audio filters, and OBS audio cursors. Off by default; no file I/O occurs while recording.");
+		receiver_form->addRow(deep_timing_diagnostics_);
 
 		program_name_ = new QLineEdit(receiver_box_);
 		mic_name_ = new QLineEdit(receiver_box_);
@@ -1294,8 +1442,8 @@ public:
 		apply_ = new QPushButton("Apply role and settings", body);
 		reset_stats_ = new QPushButton("Reset counters", body);
 		copy_diagnostics_ = new QPushButton("Copy diagnostics", body);
-		copy_flight_recorder_ = new QPushButton("Copy downstream sync CSV", body);
-		copy_flight_recorder_->setToolTip("Copies a bounded CSV timeline including raw NDI timestamp/timecode and OBS output timing.");
+		copy_flight_recorder_ = new QPushButton("Copy deep timing CSV", body);
+		copy_flight_recorder_->setToolTip("Copies the checkbox-controlled timeline including raw NDI, DistroAV handoff, OBS-selected video, audio-filter, and OBS cursor timing.");
 		export_diagnostics_ = new QPushButton("Export diagnostics", body);
 		export_diagnostics_->setToolTip("Writes a timestamped diagnostics folder containing status and downstream sync data.");
 		actions->addWidget(apply_, 1);
@@ -1352,6 +1500,17 @@ public:
 				: "Reconnect was unavailable. Confirm this is a DistroAV NDI Source created by the bridge build.");
 		});
 		connect(restart_ndi_, &QPushButton::clicked, this, [this] { restart_ndi_receiver(); });
+		connect(deep_timing_diagnostics_, &QCheckBox::toggled, this, [this](bool enabled) {
+			auto *config = bridge_config();
+			if (config) {
+				config_set_bool(config, kSection, "DeepTimingDiagnostics", enabled);
+				save_config();
+			}
+			ReceiverRouter::instance().set_deep_timing_enabled(enabled && mcb_is_receiver());
+			checklist_->setText(enabled
+				? "Deep timing diagnostics started. Export diagnostics after reproducing the drift or jump."
+				: "Deep timing diagnostics stopped. The captured buffer is preserved for export.");
+		});
 		connect(advanced_governor_, &QCheckBox::toggled, this, [this](bool visible) {
 			advanced_governor_panel_->setVisible(visible);
 		});
@@ -1388,9 +1547,9 @@ public:
 			QApplication::clipboard()->setText(diagnostics());
 		});
 		connect(copy_flight_recorder_, &QPushButton::clicked, this, [this] {
-			const std::string csv = ReceiverRouter::instance().governor_flight_recorder_csv();
+			const std::string csv = ReceiverRouter::instance().deep_timing_csv();
 			QApplication::clipboard()->setText(QString::fromStdString(csv));
-			checklist_->setText("Downstream sync summary copied as CSV.");
+			checklist_->setText("Deep timing recorder copied as CSV.");
 		});
 		connect(export_diagnostics_, &QPushButton::clicked, this, [this] { export_diagnostics(); });
 
@@ -1710,6 +1869,10 @@ private:
 		auto_configure_->setChecked(config ? config_get_bool(config, kSection, "GovernorAutoConfigure") : true);
 		drift_correction_->setChecked(
 			config ? config_get_bool(config, kSection, "GovernorDriftCorrection") : true);
+		deep_timing_diagnostics_->setChecked(
+			config ? config_get_bool(config, kSection, "DeepTimingDiagnostics") : false);
+		ReceiverRouter::instance().set_deep_timing_enabled(
+			deep_timing_diagnostics_->isChecked() && mcb_is_receiver());
 		max_audio_correction_ppm_->setValue(
 			config ? static_cast<int>(config_get_int(config, kSection, "GovernorMaxAudioCorrectionPpm")) : 1000);
 		correction_slew_ppm_->setValue(
@@ -1782,6 +1945,8 @@ private:
 		config_set_int(config, kSection, "GovernorCorrectionDeadZoneMs", correction_dead_zone_ms_->value());
 		save_config();
 		set_role_cache(new_role);
+		ReceiverRouter::instance().set_deep_timing_enabled(
+			deep_timing_diagnostics_->isChecked() && new_role == MCBRole::Receiver);
 
 		if (new_role == MCBRole::Sender) {
 			if (previous_role == MCBRole::Receiver)
@@ -1864,12 +2029,20 @@ private:
 		const QByteArray status = diagnostics().toUtf8();
 		const QByteArray recorder = QByteArray::fromStdString(
 			ReceiverRouter::instance().governor_flight_recorder_csv());
+		const QByteArray deep_timing = QByteArray::fromStdString(
+			ReceiverRouter::instance().deep_timing_csv());
 		const QByteArray notes(
 			"This bundle contains OBS-side downstream A/V status.\n"
 			"The CSV summarizes the trusted reference, native audio drift, linked audio correction,\n"
-			"and observations made after the canonical source entered OBS.\n");
+			"and observations made after the canonical source entered OBS.\n\n"
+			"deep-timing.csv is the checkbox-controlled 250 ms recorder. It compares raw NDI\n"
+			"timestamp/timecode, the DistroAV-to-OBS handoff, OBS-selected video, pre/post linked\n"
+			"audio-filter timing, and the public OBS source audio cursors. OBS's private\n"
+			"next_audio_ts_min value is not exposed, so a difference appearing only between the\n"
+			"pre-filter program timestamp and program_audio_cursor_ns identifies that ingest boundary.\n");
 		const bool ok = write_text("bridge-status.txt", status) &&
 			write_text("downstream-sync.csv", recorder) &&
+			write_text("deep-timing.csv", deep_timing) &&
 			write_text("README.txt", notes);
 		if (!ok) {
 			QMessageBox::warning(this, "Diagnostics export", "One or more diagnostics files could not be written.");
@@ -1931,7 +2104,8 @@ private:
 			"Raw / corrected change: %19 / %20 ms\nNative audio error: %21 ppm (%22 percent confidence, %23 samples)\n"
 			"Linked audio correction / target: %24 / %25 ppm\nCorrection limited: %26\n"
 			"Adjusted frames / corrected blocks: %27 / %28\n"
-			"Video / audio observations: %29 / %30\nDiscontinuities / quarantined: %31 / %32")
+			"Video / audio observations: %29 / %30\nDiscontinuities / quarantined: %31 / %32\n"
+			"Deep timing diagnostics: %33 (%34 samples, %35 overwritten)")
 			.arg(router.attached() ? "attached" : "not attached")
 			.arg(QString::fromUtf8(router.input_name().c_str()))
 			.arg(static_cast<qulonglong>(matching_receiver_count(router.input_name())))
@@ -1954,7 +2128,10 @@ private:
 			.arg(static_cast<qulonglong>(sync.video_observations))
 			.arg(static_cast<qulonglong>(sync.audio_observations))
 			.arg(static_cast<qulonglong>(sync.discontinuities))
-			.arg(static_cast<qulonglong>(sync.quarantined_samples));
+			.arg(static_cast<qulonglong>(sync.quarantined_samples))
+			.arg(router.deep_timing_enabled() ? "recording" : "off / stopped")
+			.arg(static_cast<qulonglong>(router.deep_timing_samples()))
+			.arg(static_cast<qulonglong>(router.deep_timing_overwritten()));
 		return text;
 	}
 
@@ -2116,6 +2293,7 @@ private:
 	QCheckBox *advanced_governor_ = nullptr;
 	QWidget *advanced_governor_panel_ = nullptr;
 	QCheckBox *drift_correction_ = nullptr;
+	QCheckBox *deep_timing_diagnostics_ = nullptr;
 	QSpinBox *max_audio_correction_ppm_ = nullptr;
 	QSpinBox *correction_slew_ppm_ = nullptr;
 	QSpinBox *baseline_window_ms_ = nullptr;

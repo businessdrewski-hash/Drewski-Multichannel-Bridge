@@ -70,8 +70,8 @@ bool mcb_ui_monitoring_enabled();
 bool mcb_receiver_route_audio(obs_source_t *origin, const obs_source_audio *audio, int channel_count,
 	int64_t ndi_timestamp_100ns, int64_t ndi_timecode_100ns);
 
-// Called before a raw NDI video frame is submitted to OBS. The governor may
-// adjust the frame timestamp to apply bounded playout delay and video pacing.
-// Returns false while an atomic re-lock is in progress.
+// Called before a raw NDI video frame is submitted to OBS. Video is never
+// modified; the optional deep recorder snapshots its raw NDI metadata and the
+// timestamp DistroAV is about to hand to OBS.
 bool mcb_receiver_route_video(obs_source_t *origin, obs_source_frame *video,
 	int64_t ndi_timestamp_100ns, int64_t ndi_timecode_100ns);

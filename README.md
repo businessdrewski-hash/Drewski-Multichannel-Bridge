@@ -1,7 +1,7 @@
 # Multichannel Bridge for DistroAV
 
 > Experimental modified DistroAV build for two-PC OBS setups
-> Current version: **0.6.0-alpha4**
+> Current version: **0.6.0-alpha5**
 > Based on: **DistroAV 6.2.1**
 
 ## Personal project and support disclaimer
@@ -166,7 +166,7 @@ Compatibility outside that environment is not guaranteed.
 
 Install the same release on both computers.
 
-1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha4.exe`.
+1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha5.exe`.
 2. Close OBS completely.
 3. Run the installer as Administrator on both PCs.
 4. Select the root OBS folder, normally `C:\Program Files\obs-studio`.
@@ -215,6 +215,16 @@ NDI Frame Sync:                    Off
 Sync mode:                         Source Timecode
 NDI source behavior:               Keep Active
 ```
+
+### Deep desync capture
+
+1. Open receiver **Setup** and enable **Deep timing diagnostics (for desync investigation)** immediately before a test.
+2. Reproduce the gradual drift or periodic jump. The recorder keeps up to three hours at 250 ms resolution and does not write files while media is running.
+3. Turn the checkbox off when the event has occurred. This stops capture but preserves the buffer.
+4. Click **Export diagnostics** and retain `deep-timing.csv`, `downstream-sync.csv`, `bridge-status.txt`, and the bundle `README.txt` together.
+5. Do not enable deep diagnostics again before exporting; a new enabled session intentionally starts with an empty buffer.
+
+For the cleanest native-drift isolation pass, disable **Keep both audio tracks aligned to video automatically**, apply once, then start deep diagnostics. A second pass with correction enabled can separately expose whether linked resampling contributes to the mixer spikes.
 
 ---
 
@@ -290,6 +300,13 @@ More detail: [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
 ---
 
 ## Consolidated changelog
+
+### 0.6.0-alpha5
+
+- Added checkbox-controlled deep timing diagnostics on the stream PC, off by default.
+- The bounded recorder correlates raw NDI metadata, DistroAV handoff timestamps, OBS-selected video, linked audio input/output pacing, source audio cursors, correction state, receiver settings, and lifecycle events every 250 ms for up to three hours.
+- Callback instrumentation publishes atomics only. CSV formatting and file access occur only when **Export diagnostics** is clicked.
+- Export bundles now include `deep-timing.csv`; stopping capture preserves the buffer until export.
 
 ### 0.6.0-alpha4
 

@@ -70,7 +70,12 @@ The compact dock reports raw audio movement, applied PPM, remaining corrected mo
 
 - `bridge-status.txt`
 - `downstream-sync.csv`
+- `deep-timing.csv`
 - `README.txt`
+
+`deep-timing.csv` is populated when **Deep timing diagnostics (for desync investigation)** is enabled in receiver Setup. It samples every 250 ms for up to three hours and compares raw NDI metadata, the timestamp DistroAV hands to OBS, the video frame OBS selects, the linked audio filter input/output, and OBS's public audio source cursors. The checkbox is off by default. Stopping it preserves the current buffer for export; starting it again begins a fresh session.
+
+OBS does not expose its private `next_audio_ts_min` field through the plugin API. If raw audio and pre-filter proxy timing remain paced correctly while `program_audio_cursor_ns` diverges, the first observable change is inside OBS's audio-ingest smoothing boundary.
 
 ## Limitations
 

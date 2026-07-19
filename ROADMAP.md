@@ -1,6 +1,6 @@
 # Roadmap
 
-## Implemented through 0.6.0-alpha4
+## Implemented through 0.6.0-alpha5
 
 - Stable trusted-reference learning, sample quarantine, and median jitter filtering
 - High-confidence drift-rate estimation after at least 30 seconds of persistent evidence
@@ -19,12 +19,13 @@
 - Normal OBS icon inheritance for floating bridge windows
 - Explicit receiver timing epochs after settings changes and manual **RESTART NDI**
 - Compact raw drift, applied PPM, and corrected-offset status
+- Checkbox-controlled three-hour deep timing recorder spanning raw NDI through OBS-selected video and public audio cursors
 
 ## Next validation work
 
 - Multi-hour 4K60 tests with Frame Sync disabled
 - Fault injection: network interruption, source reconnect, game-capture rehook, missing audio track, and sender restart
-- Compare raw NDI fields with converted OBS timestamps during real failures
+- Compare raw NDI, DistroAV handoff, selected video, and OBS audio cursor fields during real failures
 - Tune baseline, confidence, and hold thresholds from recorded data
 - Verify behavior across current OBS, NDI Runtime, and DistroAV releases
 

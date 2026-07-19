@@ -1,10 +1,10 @@
 # Install on both PCs
 
-Install the same `0.6.0-alpha4` package on the gaming PC and stream PC.
+Install the same `0.6.0-alpha5` package on the gaming PC and stream PC.
 
 ## Recommended EXE installation
 
-1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha4.exe`.
+1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha5.exe`.
 2. Close OBS completely.
 3. Run setup as Administrator.
 4. Select the root OBS folder, normally `C:\Program Files\obs-studio`.
@@ -53,6 +53,8 @@ Minimum drift evidence: 30 seconds
 ```
 
 After setup, collapse **Setup** and leave the compact monitor visible. Expand **Numbers** only when you want exact timing values. Use **RESTART NDI** when you want the brief hard reset and a completely fresh baseline; applying receiver settings does the same once after all changes are committed. Use **Copy diagnostics** after any unexplained jump, stall, or meter event.
+
+For a full desync investigation, enable **Deep timing diagnostics** in receiver Setup immediately before the test. After the drift or jump occurs, turn it off and use **Export diagnostics**. Turning it off preserves the capture; turning it on again begins a fresh three-hour buffer.
 
 ## Uninstall
 

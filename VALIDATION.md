@@ -1,4 +1,4 @@
-# Validation notes for v0.6.0-alpha4
+# Validation notes for v0.6.0-alpha5
 
 Completed in the source-generation environment:
 
@@ -7,8 +7,9 @@ Completed in the source-generation environment:
 - Sender Sync Core 2.0 C++17 compilation with `-Wall -Wextra -Werror`
 - Sender tests for canonical mix timestamps, 10,000-cycle bounded pairing, backward timestamp recovery, manual re-anchor, missing-track silence fallback, oversized input rejection, and the one-megabyte state-size ceiling
 - Downstream Sync Core 2.0 C++17 compilation and a deterministic 2.5-hour/200 ms late-audio simulation
+- Deep timing recorder C++17 compilation and tests for raw NDI fields, OBS cursor fields, correction state, fresh-session behavior, and stop-before-export preservation
 - Static sender and receiver audio-callback audits rejecting dynamic containers, allocation/growth calls, mutex waits, UI work, file work, and callback logging
-- Parameter-path audit covering defaults, reads/runtime paths, and writes for all 16 saved settings
+- Parameter-path audit covering defaults, reads/runtime paths, and writes for all 17 saved settings
 - Repository version and required-file checks
 - Windows PowerShell 5.1 execution test for empty and populated installer-state serialization
 
@@ -33,6 +34,8 @@ Design properties enforced by code and release tests:
 - Floating bridge windows inherit the OBS application icon.
 - Monitoring peak scans and the dock timer stop while the dock is hidden.
 - Receiver resampling storage is fixed-size and its callback has no allocation or mutex wait.
+- Deep timing diagnostics are off by default, allocate their bounded ring only when enabled, and publish only atomics from media callbacks.
+- Deep timing CSV export includes raw NDI, DistroAV handoff, selected-video, pre/post audio-filter, OBS cursor, source-setting, correction, event, and pacing-anomaly fields.
 
 Not completed in this environment:
 

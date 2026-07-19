@@ -1,4 +1,15 @@
-# v0.6.0-alpha4 release notes
+# v0.6.0-alpha5 release notes
+
+## Alpha 5 deep timing diagnostics
+
+- Adds a stream-PC **Deep timing diagnostics (for desync investigation)** checkbox, off by default.
+- Records a bounded three-hour timeline at 250 ms intervals without file I/O, UI work, allocation, logging, or mutex waits in the media callbacks.
+- Captures raw NDI audio/video timestamp and timecode, DistroAV's OBS handoff timestamps, callback pacing deltas, and source configuration including Frame Sync and sync mode.
+- Captures the video frame OBS actually selects, both proxy audio timestamps before and after linked PPM correction, input/output frame counts, expected next timestamps, correction commands, and cumulative adjusted frames.
+- Samples the public OBS audio cursor for the canonical receiver and both proxy sources, allowing the DistroAV handoff to be compared with OBS's post-ingest audio timeline.
+- Marks attach, detach, reconnect, reset, and logging-session events and counts routing contention and per-stage pacing anomalies.
+- Adds `deep-timing.csv` to **Export diagnostics**. Turning logging off preserves the completed buffer for export; turning it on again starts a fresh session.
+- Keeps the normal game-PC and stream-PC paths unchanged while diagnostics are off; the recorder allocates its history only when explicitly enabled.
 
 ## Alpha 4 receiver epoch controls
 
@@ -121,7 +132,7 @@ The two selected OBS tracks are already rendered by the same OBS audio engine be
 
 - Receiver callback routing no longer waits on the receiver UI/lifecycle mutex; it safely leaves the original path active if the lock is temporarily busy.
 - Receiver resampling buffers are fixed-size and cannot allocate during an audio callback.
-- All 16 saved settings are checked for default, load/runtime, and save paths.
+- All 17 saved settings are checked for default, load/runtime, and save paths.
 - A callback-safety test rejects sender vectors, deques, mutexes, dynamic growth, UI work, file work, or callback logging.
 - Sender tests cover 10,000 normal pair cycles, canonical timestamps, discontinuities, manual re-anchor, missing-track fallback, oversized-block rejection, and the one-megabyte state budget.
 
@@ -139,8 +150,8 @@ OBS Track B -> NDI channels 3-4 -> Microphone
 The GitHub Action builds:
 
 ```text
-Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha4.exe
-Multichannel-Bridge-for-DistroAV-v0.6.0-alpha4-Portable-Windows-x64.zip
+Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha5.exe
+Multichannel-Bridge-for-DistroAV-v0.6.0-alpha5-Portable-Windows-x64.zip
 Multichannel-Bridge-DistroAV-6.2.1.patch
 SHA256SUMS.txt
 ```

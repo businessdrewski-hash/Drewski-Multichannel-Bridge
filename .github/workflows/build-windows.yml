@@ -66,6 +66,17 @@ jobs:
           & .\build-tests\downstream-sync-core-tests.exe
           if ($LASTEXITCODE -ne 0) { throw "Downstream Sync Core tests failed with exit code $LASTEXITCODE" }
 
+      - name: Test deep timing recorder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /Ihotfix\bridge `
+            hotfix\bridge\deep-timing-recorder.cpp tests\deep-timing-recorder-tests.cpp `
+            /Fe:build-tests\deep-timing-recorder-tests.exe
+          if ($LASTEXITCODE -ne 0) { throw "Deep timing recorder test compilation failed with exit code $LASTEXITCODE" }
+          & .\build-tests\deep-timing-recorder-tests.exe
+          if ($LASTEXITCODE -ne 0) { throw "Deep timing recorder tests failed with exit code $LASTEXITCODE" }
+
       - name: Audit settings and callback safety
         shell: pwsh
         run: |
@@ -108,10 +119,12 @@ jobs:
           Push-Location distroav
           git add -N src/sender-sync-core.cpp src/sender-sync-core.h `
             src/downstream-sync-core.cpp src/downstream-sync-core.h `
+            src/deep-timing-recorder.cpp src/deep-timing-recorder.h `
             src/multichannel-bridge.cpp src/multichannel-bridge.h MULTICHANNEL-BRIDGE.md
           git diff --binary -- CMakeLists.txt src/plugin-main.cpp src/main-output.cpp src/ndi-output.cpp src/ndi-source.cpp `
             src/sender-sync-core.cpp src/sender-sync-core.h `
             src/downstream-sync-core.cpp src/downstream-sync-core.h `
+            src/deep-timing-recorder.cpp src/deep-timing-recorder.h `
             src/multichannel-bridge.cpp src/multichannel-bridge.h MULTICHANNEL-BRIDGE.md `
             | Set-Content -Encoding utf8 "$env:GITHUB_WORKSPACE\Multichannel-Bridge-DistroAV-6.2.1.patch"
           Pop-Location

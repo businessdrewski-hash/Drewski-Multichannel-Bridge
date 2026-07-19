@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply Multichannel Bridge for DistroAV v0.6.0-alpha4 to DistroAV 6.2.1.
+"""Apply Multichannel Bridge for DistroAV v0.6.0-alpha5 to DistroAV 6.2.1.
 
 The resulting custom DistroAV package is installed on BOTH computers. The OBS
 Dock selects Gaming PC / Sender or Stream PC / Receiver.
@@ -26,7 +26,7 @@ import re
 import shutil
 from pathlib import Path
 
-PATCH_MARKER = "Multichannel Bridge for DistroAV v0.6.0-alpha4"
+PATCH_MARKER = "Multichannel Bridge for DistroAV v0.6.0-alpha5"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -53,6 +53,7 @@ def patch_cmake(path: Path) -> None:
         r"^(?P<indent>[ \t]*)src/main-output\.h[ \t]*$",
         r"\g<0>\n\g<indent>src/sender-sync-core.cpp\n\g<indent>src/sender-sync-core.h"
         r"\n\g<indent>src/downstream-sync-core.cpp\n\g<indent>src/downstream-sync-core.h"
+        r"\n\g<indent>src/deep-timing-recorder.cpp\n\g<indent>src/deep-timing-recorder.h"
         r"\n\g<indent>src/multichannel-bridge.cpp\n\g<indent>src/multichannel-bridge.h",
         "CMake source list",
     )
@@ -244,7 +245,7 @@ def patch_ndi_output(path: Path) -> None:
     )
 
     state_types = r'''
-// Multichannel Bridge for DistroAV v0.6.0-alpha4. SenderSyncCore owns all
+// Multichannel Bridge for DistroAV v0.6.0-alpha5. SenderSyncCore owns all
 // sample storage up front. The atomic flag is a non-blocking safety guard: OBS
 // normally serializes selected-mixer callbacks, but an unexpected concurrent
 // callback is dropped instead of waiting on the real-time audio thread.
@@ -502,6 +503,8 @@ def copy_bridge_files(root: Path, bridge_dir: Path) -> None:
         "sender-sync-core.h",
         "downstream-sync-core.cpp",
         "downstream-sync-core.h",
+        "deep-timing-recorder.cpp",
+        "deep-timing-recorder.h",
         "multichannel-bridge.cpp",
         "multichannel-bridge.h",
     ):
@@ -514,7 +517,7 @@ def copy_bridge_files(root: Path, bridge_dir: Path) -> None:
 
 def write_notice(root: Path) -> None:
     (root / "MULTICHANNEL-BRIDGE.md").write_text(
-        "# Multichannel Bridge for DistroAV v0.6.0-alpha4\n\n"
+        "# Multichannel Bridge for DistroAV v0.6.0-alpha5\n\n"
         "Custom DistroAV 6.2.1 build. Install the same package on both PCs, then use "
         "Docks > Multichannel Bridge for DistroAV to select Gaming PC / Sender or Stream PC / Receiver.\n\n"
         "Sender defaults: OBS Track 5 -> NDI channels 1-2; OBS Track 6 -> channels 3-4.\n"
@@ -540,6 +543,8 @@ def verify(root: Path) -> None:
             "src/sender-sync-core.h",
             "src/downstream-sync-core.cpp",
             "src/downstream-sync-core.h",
+            "src/deep-timing-recorder.cpp",
+            "src/deep-timing-recorder.h",
             "src/main-output.cpp",
             "src/plugin-main.cpp",
             "src/multichannel-bridge.cpp",
@@ -571,7 +576,10 @@ def verify(root: Path) -> None:
         "mcb_sender_status_sync",
         "src/sender-sync-core.cpp",
         "src/downstream-sync-core.cpp",
+        "src/deep-timing-recorder.cpp",
         "src/multichannel-bridge.cpp",
+        "DeepTimingDiagnostics",
+        "deep-timing.csv",
         "Track A and Track B must be different",
     ]
     missing = [item for item in required if item not in joined]

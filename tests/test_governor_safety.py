@@ -30,7 +30,7 @@ if "std::clamp(drift_minimum_ms, 30000" not in cpp:
 if "std::clamp(baseline_window_ms, 5000" not in cpp:
     raise SystemExit("Trusted baseline can mature in less than five stable seconds")
 for marker in (
-    "observe_video(frame->timestamp, os_gettime_ns())",
+    "observe_video(frame->timestamp, wall_ns)",
     "observe_audio_input(audio->timestamp, wall_ns)",
     "Keep the receiver handoff untouched",
     "Video is the master clock. It passes through unchanged",

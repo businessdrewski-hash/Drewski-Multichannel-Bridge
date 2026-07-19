@@ -7,7 +7,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-if version != "0.6.0-alpha4":
+if version != "0.6.0-alpha5":
     raise SystemExit(f"Unexpected VERSION: {version}")
 
 checks = {
@@ -45,12 +45,15 @@ required = (
     "hotfix/bridge/av-governor.h",
     "hotfix/bridge/downstream-sync-core.cpp",
     "hotfix/bridge/downstream-sync-core.h",
+    "hotfix/bridge/deep-timing-recorder.cpp",
+    "hotfix/bridge/deep-timing-recorder.h",
     "hotfix/bridge/multichannel-bridge.cpp",
     "hotfix/bridge/multichannel-bridge.h",
     "hotfix/scripts/patch_distroav.py",
     "tests/sender-sync-core-tests.cpp",
     "tests/av-governor-tests.cpp",
     "tests/downstream-sync-core-tests.cpp",
+    "tests/deep-timing-recorder-tests.cpp",
     "tests/test_parameter_paths.py",
     "tests/test_callback_safety.py",
     "tests/test_installer_contract.py",
