@@ -80,6 +80,24 @@ int main()
 		"timestamp incident did not enter trusted-reference verification");
 	require(snapshot.baseline_valid, "timestamp incident discarded the first trusted baseline");
 
+	// Automatic recovery may retain the trusted reference, but no pre-restart
+	// observation may be considered fresh in the new receiver epoch.
+	core.reset(false, true);
+	snapshot = core.snapshot();
+	require(snapshot.baseline_valid && snapshot.phase == mcb::DownstreamSyncPhase::Verifying,
+		"automatic recovery did not retain the trusted reference for verification");
+	core.tick(incident_wall + step_ns);
+	snapshot = core.snapshot();
+	require(!snapshot.measurement_fresh,
+		"pre-restart clock observations leaked into the new verification epoch");
+
+	// A manual/configuration restart intentionally trusts the newly rebuilt NDI
+	// receiver instead of comparing it with an obsolete timing epoch.
+	core.reset(false, false);
+	snapshot = core.snapshot();
+	require(!snapshot.baseline_valid && snapshot.phase == mcb::DownstreamSyncPhase::Learning,
+		"manual receiver restart did not discard the old trusted reference");
+
 	std::cout << "Downstream Sync Core tests passed\n";
 	return 0;
 }

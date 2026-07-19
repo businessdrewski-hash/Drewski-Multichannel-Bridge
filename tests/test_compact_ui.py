@@ -25,6 +25,9 @@ required = (
     "automatic_recovery_tick",
     "safety_timer_->setInterval(2000)",
     'obs_data_set_int(settings, "ndi_behavior", 0)',
+    'restart_ndi_ = new QPushButton("RESTART NDI"',
+    "Audio dragging",
+    "applying %3 ppm · corrected to %4 ms",
 )
 for marker in required:
     if marker not in bridge:

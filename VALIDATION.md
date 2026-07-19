@@ -1,4 +1,4 @@
-# Validation notes for v0.6.0-alpha3
+# Validation notes for v0.6.0-alpha4
 
 Completed in the source-generation environment:
 
@@ -26,8 +26,10 @@ Design properties enforced by code and release tests:
 - Mismatched recovery enters needs-attention bypass instead of accepting the fault as a new baseline.
 - Receiver proxy sources are audio-active and explicit repair clears mute/zero-volume/empty-routing states.
 - Existing DistroAV receiver sources expose an in-place reconnect procedure and only one automatic reconnect is attempted during fail-safe recovery, including while the dock is hidden.
+- Manual/configuration receiver restarts discard the prior reference and clear stale clock observations before learning a new timing epoch.
+- Automatic fail-safe reconnects preserve the trusted reference for verification rather than silently accepting the fault.
 - The receiver configuration prefers one canonical Keep Active source that is shared into other scenes by reference.
-- The compact monitor exposes health, rushing/dragging direction, a brief recommendation, and collapsible exact numbers.
+- The compact monitor exposes health, rushing/dragging direction, raw-to-corrected audio movement, applied PPM, a brief recommendation, a receiver restart button, and collapsible exact numbers.
 - Floating bridge windows inherit the OBS application icon.
 - Monitoring peak scans and the dock timer stop while the dock is hidden.
 - Receiver resampling storage is fixed-size and its callback has no allocation or mutex wait.

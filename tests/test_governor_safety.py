@@ -17,6 +17,9 @@ required = (
     "state_.native_audio_error_ppm = state_.drift_ppm",
     "target = -static_cast<double>(state_.native_audio_error_ppm)",
     "state_.relation_ns = filtered_raw +",
+    "video_timestamp_ns_.store(0",
+    "audio_timestamp_ns_.store(0",
+    "output_timestamp_ns_.store(0",
 )
 for marker in required:
     if marker not in cpp and marker not in header:

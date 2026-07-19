@@ -62,7 +62,7 @@ constexpr const char *kAudioClockFilterId = "ndi_multichannel_bridge_linked_audi
 constexpr const char *kVideoProbeFilterName = "[MCB] Downstream Video Clock";
 constexpr const char *kAudioClockFilterName = "[MCB] Linked Audio Clock";
 constexpr const char *kAudioClockPairKey = "mcb_audio_clock_pair";
-constexpr const char *kVersion = "0.6.0-alpha3";
+constexpr const char *kVersion = "0.6.0-alpha4";
 constexpr const char *kGovernorVersion = "2.0";
 constexpr const char *kSenderCoreVersion = "2.0";
 constexpr const char *kDefaultProgramName = "MCB Desktop / Game";
@@ -367,15 +367,11 @@ public:
 		obs_source_update(source, settings);
 		obs_data_release(settings);
 		obs_source_release(source);
-		const bool reconnect_requested = force_reconnect();
-		sync_core_.reset(false, true);
-		obs_log(LOG_INFO,
-			"[multichannel-bridge] Applied recommended source timing and requested receiver reconnect: %s",
-			reconnect_requested ? "yes" : "procedure unavailable");
+		obs_log(LOG_INFO, "[multichannel-bridge] Applied recommended source timing settings");
 		return true;
 	}
 
-	bool force_reconnect()
+	bool force_reconnect(bool preserve_trusted_baseline = false)
 	{
 		obs_source_t *source = nullptr;
 		{
@@ -394,8 +390,10 @@ public:
 		calldata_free(&params);
 		obs_source_release(source);
 		if (accepted) {
-			sync_core_.reset(false, true);
-			obs_log(LOG_INFO, "[multichannel-bridge] Requested an in-place DistroAV receiver reconnect");
+			sync_core_.reset(false, preserve_trusted_baseline);
+			obs_log(LOG_INFO,
+				"[multichannel-bridge] Requested an in-place DistroAV receiver reconnect (%s baseline)",
+				preserve_trusted_baseline ? "verify trusted" : "discard old");
 		}
 		return accepted;
 	}
@@ -1088,8 +1086,18 @@ public:
 		suggestion_ = new QLabel(monitor_panel_);
 		suggestion_->setWordWrap(true);
 		suggestion_->setTextFormat(Qt::RichText);
+		restart_ndi_ = new QPushButton("RESTART NDI", monitor_panel_);
+		restart_ndi_->setToolTip(
+			"Reconnect the selected DistroAV receiver, discard the old timing reference, and learn a fresh baseline. Audio/video will cut briefly.");
+		restart_ndi_->setVisible(false);
 		monitor_layout->addWidget(health_banner_);
 		monitor_layout->addWidget(timing_summary_);
+		auto *monitor_action_row = new QHBoxLayout;
+		monitor_action_row->setContentsMargins(0, 0, 0, 0);
+		monitor_action_row->setSpacing(6);
+		monitor_action_row->addWidget(suggestion_, 1);
+		monitor_action_row->addWidget(restart_ndi_);
+		monitor_layout->addLayout(monitor_action_row);
 
 		auto *monitor_meter_row = new QHBoxLayout;
 		monitor_program_label_ = new QLabel("Desktop + game", monitor_panel_);
@@ -1106,7 +1114,6 @@ public:
 		monitor_meter_row->addWidget(monitor_mic_label_);
 		monitor_meter_row->addWidget(monitor_mic_meter_, 1);
 		monitor_layout->addLayout(monitor_meter_row);
-		monitor_layout->addWidget(suggestion_);
 
 		monitor_numbers_panel_ = new QWidget(monitor_panel_);
 		auto *numbers_layout = new QVBoxLayout(monitor_numbers_panel_);
@@ -1337,13 +1344,14 @@ public:
 			refresh_source_context();
 		});
 		connect(reconnect_receiver_, &QPushButton::clicked, this, [this] {
-			const bool ok = ReceiverRouter::instance().force_reconnect();
+			const bool ok = ReceiverRouter::instance().force_reconnect(false);
 			if (ok)
 				auto_reconnect_attempts_ = 0;
 			checklist_->setText(ok
-				? "Existing DistroAV source reconnected in place; scene layout and filters were preserved."
+				? "Existing DistroAV source restarted; the old timing reference was discarded and a fresh baseline is being learned."
 				: "Reconnect was unavailable. Confirm this is a DistroAV NDI Source created by the bridge build.");
 		});
+		connect(restart_ndi_, &QPushButton::clicked, this, [this] { restart_ndi_receiver(); });
 		connect(advanced_governor_, &QCheckBox::toggled, this, [this](bool visible) {
 			advanced_governor_panel_->setVisible(visible);
 		});
@@ -1507,9 +1515,11 @@ private:
 		const size_t duplicate_count = matching_receiver_count(source_name);
 		const bool connection_ready = router.attached() && router.outputs_active() && router.channels() >= 4 &&
 			receiver_age_ms >= 0.0 && receiver_age_ms < 500.0;
+		restart_ndi_->setEnabled(router.attached());
 		const int64_t raw_relation_ns = sync.baseline_valid
 			? sync.baseline_ns + sync.raw_deviation_ns : sync.relation_ns;
 		const double raw_relation_ms = static_cast<double>(raw_relation_ns) / 1e6;
+		const double raw_deviation_ms = static_cast<double>(sync.raw_deviation_ns) / 1e6;
 		const double deviation_ms = static_cast<double>(sync.corrected_deviation_ns) / 1e6;
 		const double absolute_deviation = std::fabs(deviation_ms);
 		QString direction;
@@ -1526,7 +1536,26 @@ private:
 				"<span style='color:#e6b450'><b>Desktop + mic rushing</b></span> by %1 ms · video dragging.")
 				.arg(absolute_deviation, 0, 'f', 1);
 		}
-		timing_summary_->setText(direction);
+		QString correction_summary;
+		if (!sync.baseline_valid) {
+			correction_summary = "<b>Audio correction:</b> waiting for a fresh trusted baseline.";
+		} else {
+			const QString raw_motion = std::fabs(raw_deviation_ms) < 2.0
+				? "Audio offset"
+				: raw_deviation_ms > 0.0 ? "Audio dragging" : "Audio rushing";
+			const QString raw_signed = QString("%1%2")
+				.arg(raw_deviation_ms >= 0.0 ? "+" : "")
+				.arg(raw_deviation_ms, 0, 'f', 1);
+			const QString corrected_signed = QString("%1%2")
+				.arg(deviation_ms >= 0.0 ? "+" : "")
+				.arg(deviation_ms, 0, 'f', 1);
+			correction_summary = QString(
+				"<b>%1 by %2 ms</b> · applying %3 ppm · corrected to %4 ms")
+				.arg(raw_motion, raw_signed)
+				.arg(sync.correction_ppm, 0, 'f', 1)
+				.arg(corrected_signed);
+		}
+		timing_summary_->setText(direction + "<br>" + correction_summary);
 
 		if (duplicate_count > 1) {
 			set_health_banner(QString("<b>Setup conflict</b> — %1 separate NDI receivers use the same sender.").arg(duplicate_count),
@@ -1611,6 +1640,28 @@ private:
 		restart_sender_->setEnabled(true);
 		reanchor_sender_->setEnabled(true);
 		checklist_->setText("Multichannel NDI sender restarted with the existing track mapping.");
+		update_status();
+	}
+
+	void restart_ndi_receiver()
+	{
+		if (!mcb_is_receiver())
+			return;
+		const uint64_t now_ns = os_gettime_ns();
+		if (last_receiver_restart_ns_ && now_ns >= last_receiver_restart_ns_ &&
+			now_ns - last_receiver_restart_ns_ < 2000000000ULL) {
+			checklist_->setText("RESTART NDI is cooling down. Wait two seconds before trying again.");
+			return;
+		}
+		last_receiver_restart_ns_ = now_ns;
+		restart_ndi_->setEnabled(false);
+		const bool restarted = ReceiverRouter::instance().force_reconnect(false);
+		if (restarted)
+			auto_reconnect_attempts_ = 0;
+		restart_ndi_->setEnabled(ReceiverRouter::instance().attached());
+		checklist_->setText(restarted
+			? "NDI receiver restarted. The old baseline was discarded; audio/video may cut briefly while a fresh baseline is learned."
+			: "NDI restart was unavailable. Select a bridge-patched DistroAV receiver in Setup.");
 		update_status();
 	}
 
@@ -1766,16 +1817,28 @@ private:
 			ReceiverRouter::instance().apply_recommended_source_settings();
 		else
 			ReceiverRouter::instance().refresh_source_configuration();
+		// Applying any receiver-side bridge setting is an explicit new timing
+		// epoch. Rebuild the NDI receiver once after all settings are committed and
+		// discard the previous baseline instead of comparing a reset video clock
+		// against an older trusted relationship.
+		const bool receiver_restarted = ReceiverRouter::instance().force_reconnect(false);
 		if (create_sources) {
 			const bool program_ok = add_proxy_to_current_scene(
 				kProgramSourceId, program_name_->text().toUtf8().constData(), true);
 			const bool mic_ok = add_proxy_to_current_scene(
 				kMicSourceId, mic_name_->text().toUtf8().constData(), true);
-			checklist_->setText(program_ok && mic_ok
-						   ? "Receiver attached and both split audio sources are present in the current scene."
-						   : "Receiver attached, but one or both split sources could not be added. Check for duplicate names.");
+			QString result;
+			if (!program_ok || !mic_ok)
+				result = "Receiver attached, but one or both split sources could not be added. Check for duplicate names.";
+			else if (receiver_restarted)
+				result = "Receiver settings applied, NDI restarted, and both split audio sources are present. A fresh baseline is being learned.";
+			else
+				result = "Receiver attached and both split audio sources are present, but the NDI restart procedure was unavailable.";
+			checklist_->setText(result);
 		} else {
-			checklist_->setText("Receiver attached. Use Create / repair if the two mixer sources are missing.");
+			checklist_->setText(receiver_restarted
+				? "Receiver settings applied and NDI restarted. The old baseline was discarded; a fresh baseline is being learned."
+				: "Receiver attached. NDI restart was unavailable; use Create / repair if the two mixer sources are missing.");
 		}
 	}
 
@@ -1904,7 +1967,7 @@ private:
 		if (sync.phase != mcb::DownstreamSyncPhase::Failed)
 			return;
 		++auto_reconnect_attempts_;
-		const bool reconnected = router.force_reconnect();
+		const bool reconnected = router.force_reconnect(true);
 		checklist_->setText(reconnected
 			? "Automatic recovery reconnected the existing receiver once. The trusted sync is being verified."
 			: "Automatic recovery could not reconnect this source. Output remains live unchanged; reconnect manually in Setup.");
@@ -1914,6 +1977,7 @@ private:
 
 	void update_status()
 	{
+		restart_ndi_->setVisible(mcb_is_receiver());
 		const auto status = mcb_sender_status_snapshot();
 		const uint64_t now = os_gettime_ns();
 		const double age_ms = status.last_audio_monotonic_ns && now >= status.last_audio_monotonic_ns
@@ -2025,6 +2089,7 @@ private:
 	QLabel *health_banner_ = nullptr;
 	QLabel *timing_summary_ = nullptr;
 	QLabel *suggestion_ = nullptr;
+	QPushButton *restart_ndi_ = nullptr;
 	QLabel *monitor_numbers_ = nullptr;
 	QLabel *monitor_program_label_ = nullptr;
 	QLabel *monitor_mic_label_ = nullptr;
@@ -2077,6 +2142,7 @@ private:
 	QTimer *safety_timer_ = nullptr;
 	QTimer *sync_timer_ = nullptr;
 	uint64_t last_restart_ns_ = 0;
+	uint64_t last_receiver_restart_ns_ = 0;
 	uint32_t auto_reconnect_attempts_ = 0;
 };
 

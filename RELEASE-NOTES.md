@@ -1,4 +1,13 @@
-# v0.6.0-alpha3 release notes
+# v0.6.0-alpha4 release notes
+
+## Alpha 4 receiver epoch controls
+
+- Adds a compact **RESTART NDI** button beside the suggested action in the always-visible stream-PC monitor.
+- A manual restart rebuilds the existing canonical DistroAV receiver in place, intentionally discards the old trusted reference, and learns a fresh baseline after the brief A/V cut.
+- Applying any receiver-side bridge setting now performs exactly one receiver restart after all settings are committed and starts a clean timing epoch.
+- Clears stale pre-restart video, audio, and corrected-output observations so they cannot leak into the new learning window.
+- Adds an always-visible summary of raw audio movement, applied PPM, and remaining corrected movement.
+- Automatic fail-safe recovery still preserves the trusted reference and verifies the reconnect against it; only explicit user/configuration resets intentionally rebaseline.
 
 ## Alpha 3 filter lifecycle correction
 
@@ -38,7 +47,7 @@
 
 ## Trusted recovery and drift safety
 
-- Keeps the last trusted A/V reference across discontinuities and receiver reconnects.
+- Keeps the last trusted A/V reference across discontinuities and automatic fail-safe reconnects.
 - Requires five stable seconds before accepting the initial reference or a recovery candidate.
 - Quarantines two seconds of observations after a fault so a jump cannot contaminate baseline or drift calculations.
 - Rejects a recovered offset that differs materially from the trusted reference instead of silently declaring it normal.
@@ -130,8 +139,8 @@ OBS Track B -> NDI channels 3-4 -> Microphone
 The GitHub Action builds:
 
 ```text
-Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha3.exe
-Multichannel-Bridge-for-DistroAV-v0.6.0-alpha3-Portable-Windows-x64.zip
+Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha4.exe
+Multichannel-Bridge-for-DistroAV-v0.6.0-alpha4-Portable-Windows-x64.zip
 Multichannel-Bridge-DistroAV-6.2.1.patch
 SHA256SUMS.txt
 ```

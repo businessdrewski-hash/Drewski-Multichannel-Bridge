@@ -1,7 +1,7 @@
 # Multichannel Bridge for DistroAV
 
 > Experimental modified DistroAV build for two-PC OBS setups
-> Current version: **0.6.0-alpha3**
+> Current version: **0.6.0-alpha4**
 > Based on: **DistroAV 6.2.1**
 
 ## Personal project and support disclaimer
@@ -68,6 +68,9 @@ It:
 - uses fixed, preallocated interpolation storage and performs no allocation, UI work, logging, or mutex wait in the audio-filter callback;
 - preserves the accumulated linked-audio timeline through input timestamp re-anchors, then verifies it against the trusted reference;
 - makes one in-place receiver reconnect attempt even when the dock is hidden if verification fails;
+- provides a compact **RESTART NDI** action that intentionally starts a fresh receiver timing epoch;
+- restarts the receiver and relearns the baseline after receiver-side bridge settings are applied;
+- summarizes raw audio movement, applied PPM, and the remaining corrected offset in the main monitor;
 - presents a compact, color-coded health summary while keeping exact numbers and setup independently collapsible.
 
 See [`AV-GOVERNOR.md`](AV-GOVERNOR.md) for the detailed downstream measurement and correction behavior. The legacy filename is retained for existing links.
@@ -163,7 +166,7 @@ Compatibility outside that environment is not guaranteed.
 
 Install the same release on both computers.
 
-1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha3.exe`.
+1. Download `Multichannel-Bridge-for-DistroAV-Setup-v0.6.0-alpha4.exe`.
 2. Close OBS completely.
 3. Run the installer as Administrator on both PCs.
 4. Select the root OBS folder, normally `C:\Program Files\obs-studio`.
@@ -287,6 +290,13 @@ More detail: [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
 ---
 
 ## Consolidated changelog
+
+### 0.6.0-alpha4
+
+- Added an always-visible **RESTART NDI** receiver control that discards the prior reference and learns a clean baseline after the brief reconnect cut.
+- Applying receiver-side bridge settings now restarts NDI once, after all changes are committed, and starts a new timing epoch.
+- Added a compact “audio dragging/rushing → applied PPM → corrected offset” summary.
+- Prevented stale pre-restart observations from entering a new learning window while retaining trusted-reference verification for automatic fail-safe recovery.
 
 ### 0.6.0-alpha3
 

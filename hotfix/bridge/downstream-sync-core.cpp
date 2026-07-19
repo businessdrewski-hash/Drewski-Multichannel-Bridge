@@ -105,6 +105,16 @@ void DownstreamSyncCore::reset(bool reset_counters, bool preserve_trusted_baseli
 	target_ppm_.store(0.0, std::memory_order_relaxed);
 	net_frame_adjustment_.store(0, std::memory_order_relaxed);
 	corrected_blocks_.store(0, std::memory_order_relaxed);
+	// A receiver reconnect starts a new media-timestamp epoch. Do not allow a
+	// fresh learning/verification window to consume the last pre-reconnect
+	// video, audio, or corrected-output observation while the NDI receiver is
+	// being rebuilt asynchronously.
+	video_timestamp_ns_.store(0, std::memory_order_relaxed);
+	video_wall_ns_.store(0, std::memory_order_relaxed);
+	audio_timestamp_ns_.store(0, std::memory_order_relaxed);
+	audio_wall_ns_.store(0, std::memory_order_relaxed);
+	output_timestamp_ns_.store(0, std::memory_order_relaxed);
+	output_wall_ns_.store(0, std::memory_order_relaxed);
 	filter_generation_.fetch_add(1, std::memory_order_acq_rel);
 }
 

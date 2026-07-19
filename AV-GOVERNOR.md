@@ -50,7 +50,9 @@ The 1000 ppm ceiling is primarily available to remove an existing offset. A stea
 
 ## Recovery
 
-Backward timestamps, repeated clock movement, or a greater-than-50 ms timestamp-versus-wall discontinuity start a two-second quarantine. The first baseline is retained. The linked output timeline and its cumulative frame adjustment are preserved while the raw input clock is re-anchored, preventing a reconnect from snapping corrected audio back to an hours-late raw clock.
+Backward timestamps, repeated clock movement, or a greater-than-50 ms timestamp-versus-wall discontinuity start a two-second quarantine. During automatic recovery, the first baseline is retained. The linked output timeline and its cumulative frame adjustment are preserved while the raw input clock is re-anchored, preventing an automatic reconnect from silently accepting an hours-late raw clock.
+
+An explicit **RESTART NDI** or applied receiver-setting change is different: it deliberately discards the old baseline, clears the last video/audio/output observations, rebuilds the existing receiver, and learns a new trusted reference after the brief cut.
 
 After quarantine, five stable seconds must agree with the trusted reference within 40 ms. If not, the plugin leaves output live, stops correction, and requests attention rather than accepting the fault as a new normal.
 
@@ -64,7 +66,7 @@ After quarantine, five stable seconds must agree with the trusted reference with
 
 ## Diagnostics
 
-The compact dock reports the OBS-facing relation, corrected change, trusted reference, native drift, linked correction, packet age, and adjusted frames. **Export diagnostics** creates:
+The compact dock reports raw audio movement, applied PPM, remaining corrected movement, and a nearby **RESTART NDI** action. The expanded Numbers panel adds the OBS-facing relation, trusted reference, native drift, packet age, and adjusted frames. **Export diagnostics** creates:
 
 - `bridge-status.txt`
 - `downstream-sync.csv`

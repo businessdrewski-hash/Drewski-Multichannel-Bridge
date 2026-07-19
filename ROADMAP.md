@@ -1,6 +1,6 @@
 # Roadmap
 
-## Implemented through 0.6.0-alpha3
+## Implemented through 0.6.0-alpha4
 
 - Stable trusted-reference learning, sample quarantine, and median jitter filtering
 - High-confidence drift-rate estimation after at least 30 seconds of persistent evidence
@@ -17,6 +17,8 @@
 - Compact color-coded monitoring with rushing/dragging direction, brief recommendations, and collapsible exact numbers
 - Canonical Keep Active receiver reuse across scenes and duplicate-receiver warnings
 - Normal OBS icon inheritance for floating bridge windows
+- Explicit receiver timing epochs after settings changes and manual **RESTART NDI**
+- Compact raw drift, applied PPM, and corrected-offset status
 
 ## Next validation work
 

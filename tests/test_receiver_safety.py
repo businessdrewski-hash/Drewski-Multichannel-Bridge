@@ -14,7 +14,7 @@ required_bridge = (
     "obs_source_set_audio_active(source, true);",
     "obs_source_set_muted(proxy, false);",
     "obs_source_set_audio_mixers(proxy, 0x3fU);",
-    "bool force_reconnect()",
+    "bool force_reconnect(bool preserve_trusted_baseline = false)",
     'proc_handler_call(\n\t\t\tobs_source_get_proc_handler(source), "mcb_force_reconnect"',
     'obs_data_set_int(settings, "ndi_behavior", 0)',
     "matching_receiver_count",
@@ -27,6 +27,10 @@ required_bridge = (
     "remove_private_filters_by_id(parent, id);",
     "obs_source_enum_filters(parent, collect_private_filter, &collector);",
     "ReceiverRouter::instance().reconcile_audio_clock_filters();",
+    "ReceiverRouter::instance().force_reconnect(false);",
+    "router.force_reconnect(true)",
+    'restart_ndi_ = new QPushButton("RESTART NDI"',
+    "restart_ndi_receiver()",
 )
 for marker in required_bridge:
     if marker not in bridge:
